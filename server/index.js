@@ -1,5 +1,8 @@
 import "dotenv/config";
 import express from "express";
+import path from "path";
+import fs from "fs";
+import { fileURLToPath } from "url";
 import { runAgent } from "./agent.js";
 import { KPIS, ALERTS, ORG } from "./data.js";
 
@@ -7,6 +10,7 @@ const app = express();
 app.use(express.json());
 
 const PORT = process.env.PORT || 8787;
+const distDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "dist");
 
 // Lightweight context the UI loads on boot (no LLM call).
 app.get("/api/overview", (_req, res) => {
@@ -15,7 +19,7 @@ app.get("/api/overview", (_req, res) => {
 
 // Streaming chat endpoint (Server-Sent Events).
 app.post("/api/chat", async (req, res) => {
-  const { messages } = req.body || {};
+  const { messages, mode } = req.body || {};
   if (!Array.isArray(messages) || messages.length === 0) {
     return res.status(400).json({ error: "messages[] required" });
   }
@@ -31,7 +35,7 @@ app.post("/api/chat", async (req, res) => {
   const send = (event) => res.write(`data: ${JSON.stringify(event)}\n\n`);
 
   try {
-    await runAgent(messages, send);
+    await runAgent(messages, send, mode === "learn" ? "learn" : "pro");
     send({ type: "done" });
   } catch (err) {
     console.error("[agent error]", err);
@@ -40,6 +44,13 @@ app.post("/api/chat", async (req, res) => {
     res.end();
   }
 });
+
+// In production (after `npm run build`), serve the built frontend from this same
+// server so the whole app lives at one URL — and the API key stays server-side.
+if (fs.existsSync(distDir)) {
+  app.use(express.static(distDir));
+  app.get("*", (_req, res) => res.sendFile(path.join(distDir, "index.html")));
+}
 
 app.listen(PORT, () => {
   console.log(`\n  Cadence backend on http://localhost:${PORT}`);

@@ -4,8 +4,10 @@
   --color-ink: #0b1220;
   --color-ink-700: #16203a;
   --color-canvas: #f6f7f9;
-  --color-brand: #fa4616;
-  --color-brand-soft: #ffe9e1;
+  --color-brand: #0077c8;
+  --color-brand-soft: #e1f1fb;
+  --color-accent: #78be43;
+  --color-accent-soft: #eaf6df;
   --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
 }
 
@@ -17,7 +19,8 @@ body,
 
 body {
   margin: 0;
-  background: var(--color-canvas);
+  /* Very light ombre: faint Allina blue → faint Allina green */
+  background: linear-gradient(135deg, #dcebf8 0%, #eaf2ec 52%, #ddefda 100%) fixed;
   color: var(--color-ink);
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;

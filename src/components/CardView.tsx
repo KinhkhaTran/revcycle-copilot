@@ -4,8 +4,8 @@ import {
 } from "recharts";
 import type { Card } from "../types";
 
-const PALETTE = ["#fa4616", "#0b1220", "#2563eb", "#0891b2", "#7c3aed", "#d97706"];
-const STAGE_DOT: Record<string, string> = { front: "#fa4616", mid: "#7c3aed", back: "#2563eb" };
+const PALETTE = ["#0077c8", "#78be43", "#0b1220", "#00a3b4", "#5b8def", "#2c6e49"];
+const STAGE_DOT: Record<string, string> = { front: "#0077c8", mid: "#78be43", back: "#00838f" };
 
 export default function CardView({ card }: { card: Card }) {
   return (
@@ -65,7 +65,7 @@ function render(card: Card) {
             <XAxis dataKey="week" tick={{ fontSize: 11, fill: "#64748b" }} />
             <YAxis tick={{ fontSize: 11, fill: "#64748b" }} width={36} domain={["dataMin - 2", "dataMax + 2"]} />
             <Tooltip contentStyle={tooltipStyle} />
-            <Line type="monotone" dataKey="value" stroke="#fa4616" strokeWidth={2.5} dot={{ r: 2.5 }} activeDot={{ r: 4 }} />
+            <Line type="monotone" dataKey="value" stroke="#0077c8" strokeWidth={2.5} dot={{ r: 2.5 }} activeDot={{ r: 4 }} />
           </LineChart>
         </ResponsiveContainer>
       );
@@ -149,7 +149,7 @@ function render(card: Card) {
 
 function TrendArrow({ trend, good }: { trend: "up" | "down" | "flat"; good?: boolean }) {
   if (trend === "flat") return <span className="text-xs text-slate-400">→</span>;
-  const color = good === undefined ? "text-slate-400" : good ? "text-emerald-600" : "text-rose-500";
+  const color = good === undefined ? "text-slate-400" : good ? "text-[var(--color-accent)]" : "text-rose-500";
   return <span className={`text-xs ${color}`}>{trend === "up" ? "▲" : "▼"}</span>;
 }
 

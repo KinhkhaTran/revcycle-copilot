@@ -12,12 +12,18 @@ interface WireMessage {
   content: string;
 }
 
+export type Mode = "learn" | "pro";
+
 // POST the conversation, parse the SSE stream, and invoke onEvent for each event.
-export async function streamChat(messages: WireMessage[], onEvent: (e: StreamEvent) => void) {
+export async function streamChat(
+  messages: WireMessage[],
+  mode: Mode,
+  onEvent: (e: StreamEvent) => void
+) {
   const res = await fetch("/api/chat", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ messages }),
+    body: JSON.stringify({ messages, mode }),
   });
 
   if (!res.ok || !res.body) {

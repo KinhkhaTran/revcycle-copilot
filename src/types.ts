@@ -25,6 +25,8 @@ export interface ChatMessage {
   text: string;
   cards?: Card[];
   tools?: string[];
+  /** Sent to the model but not rendered — used to seed the proactive briefing. */
+  hidden?: boolean;
 }
 
 export interface Kpi {

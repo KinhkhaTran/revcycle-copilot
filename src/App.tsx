@@ -1,27 +1,72 @@
 import { useEffect, useRef, useState } from "react";
-import { streamChat } from "./api";
+import { streamChat, type Mode } from "./api";
 import CardView from "./components/CardView";
+import Markdown from "./components/Markdown";
 import type { Alert, ChatMessage, Kpi } from "./types";
 
-const SUGGESTIONS = [
-  "How is the team doing this week?",
-  "Why are our denials up, and where do they start?",
-  "Which payer should I worry about for prior auth?",
-  "What should I focus on to recover the most revenue?",
-  "Show me the eligibility auto-verify trend.",
-  "Who on my team is falling behind?",
-];
+// Seeds the morning briefing. Phrased to lean on get_alerts + get_kpi_overview
+// and to render well through the markdown component (headline → list → lever).
+const BRIEFING_PROMPT =
+  "Good morning — give me my daily briefing. Pull the active alerts and the KPI overview first, then respond with exactly: a one-sentence headline on how the revenue cycle is doing today; then a `## Today's top 3 priorities` numbered list, each ranked by revenue impact with the dollar figure and its upstream root cause; then one closing sentence naming the single biggest lever to pull. Keep it tight and scannable — no preamble.";
+
+const TABS: Record<Mode, {
+  label: string;
+  tagline: string;
+  heading: string;
+  blurb: string;
+  suggestions: string[];
+  featured?: { label: string; sub: string; prompt: string };
+}> = {
+  learn: {
+    label: "Learn",
+    tagline: "For interns — understand the revenue cycle",
+    heading: "Learn the revenue cycle by asking.",
+    blurb:
+      "Cadence teaches the revenue cycle using Allina's live numbers as worked examples — what each metric means, why it matters, and where denials are really born.",
+    suggestions: [
+      "Walk me through the revenue cycle, front to back.",
+      "Explain clean claim rate — what's good and what moves it?",
+      "What is a prior authorization, and why do denials happen?",
+      "Why are most denials 'born' on the front end?",
+      "What do CARC and RARC denial codes mean?",
+      "Quiz me on revenue cycle basics.",
+    ],
+  },
+  pro: {
+    label: "Productivity",
+    tagline: "Department-wide — measure & act",
+    heading: "Manage your revenue cycle by asking.",
+    blurb:
+      "Cadence pulls live productivity and denial numbers, narrates what changed, and helps decide what to put on your Power BI dashboard — then tells you what to do about it.",
+    featured: {
+      label: "Get my morning briefing",
+      sub: "Your top 3 priorities by revenue impact, triaged",
+      prompt: BRIEFING_PROMPT,
+    },
+    suggestions: [
+      "How is the team doing this week?",
+      "What productivity metrics should we put on our dashboard?",
+      "Which payer should I worry about for prior auth?",
+      "Why are our denials up, and where do they start?",
+    ],
+  },
+};
 
 export default function App() {
   const [kpis, setKpis] = useState<Kpi[]>([]);
   const [alerts, setAlerts] = useState<Alert[]>([]);
-  const [orgName, setOrgName] = useState("Northstar Health Partners");
+  const [orgName, setOrgName] = useState("Allina Health");
   const [hasKey, setHasKey] = useState(true);
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [tab, setTab] = useState<Mode>("learn");
+  const [threads, setThreads] = useState<Record<Mode, ChatMessage[]>>({ learn: [], pro: [] });
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [working, setWorking] = useState<string | null>(null);
   const threadRef = useRef<HTMLDivElement>(null);
+
+  const messages = threads[tab];
+  const setMessages = (updater: (prev: ChatMessage[]) => ChatMessage[], mode: Mode = tab) =>
+    setThreads((prev) => ({ ...prev, [mode]: updater(prev[mode]) }));
 
   useEffect(() => {
     fetch("/api/overview")
@@ -40,28 +85,29 @@ export default function App() {
     threadRef.current?.scrollTo({ top: threadRef.current.scrollHeight, behavior: "smooth" });
   }, [messages, working]);
 
-  async function send(text: string) {
+  async function send(text: string, opts?: { hidden?: boolean }) {
     if (!text.trim() || busy) return;
-    const userMsg: ChatMessage = { role: "user", text: text.trim() };
-    const history = [...messages, userMsg];
-    setMessages([...history, { role: "assistant", text: "", cards: [], tools: [] }]);
+    const mode = tab; // lock to the tab the message was sent from
+    const userMsg: ChatMessage = { role: "user", text: text.trim(), hidden: opts?.hidden };
+    const history = [...threads[mode], userMsg];
+    setMessages(() => [...history, { role: "assistant", text: "", cards: [], tools: [] }], mode);
     setInput("");
     setBusy(true);
     setWorking(null);
 
     const wire = history.map((m) => ({ role: m.role, content: m.text }));
 
-    await streamChat(wire, (e) => {
+    await streamChat(wire, mode, (e) => {
       setMessages((prev) => {
-        const next = [...prev];
-        const last = next[next.length - 1];
+        const last = prev[prev.length - 1];
         if (last?.role !== "assistant") return prev;
-        if (e.type === "text") last.text += e.text;
-        else if (e.type === "card") last.cards = [...(last.cards || []), e.card];
-        else if (e.type === "tool_use") last.tools = [...(last.tools || []), e.name];
-        else if (e.type === "error") last.text += `\n\n⚠️ ${e.message}`;
-        return next;
-      });
+        const updated = { ...last };
+        if (e.type === "text") updated.text = last.text + e.text;
+        else if (e.type === "card") updated.cards = [...(last.cards || []), e.card];
+        else if (e.type === "tool_use") updated.tools = [...(last.tools || []), e.name];
+        else if (e.type === "error") updated.text = last.text + `\n\n⚠️ ${e.message}`;
+        return [...prev.slice(0, -1), updated];
+      }, mode);
       if (e.type === "tool_use") setWorking(prettyTool(e.name));
       if (e.type === "text") setWorking(null);
     });
@@ -86,7 +132,10 @@ export default function App() {
         </div>
 
         <div className="border-t border-white/10 px-5 py-3">
-          <div className="text-[11px] uppercase tracking-wide text-slate-400">{orgName}</div>
+          <div className="text-xs font-semibold uppercase tracking-wide">
+            <span className="text-[var(--color-brand)]">{orgName.split(" ")[0]}</span>{" "}
+            <span className="text-[var(--color-accent)]">{orgName.split(" ").slice(1).join(" ")}</span>
+          </div>
           <div className="text-[11px] text-slate-500">Serviced by Optum · synthetic demo data</div>
         </div>
 
@@ -116,6 +165,26 @@ export default function App() {
 
       {/* ── Main ──────────────────────────────────────────────── */}
       <main className="flex min-w-0 flex-1 flex-col">
+        {/* Mode tabs */}
+        <div className="flex items-center justify-between gap-3 border-b border-slate-200 bg-white px-4 py-2.5 sm:px-8">
+          <div className="inline-flex rounded-xl bg-slate-100 p-1">
+            {(Object.keys(TABS) as Mode[]).map((m) => (
+              <button
+                key={m}
+                onClick={() => setTab(m)}
+                className={`rounded-lg px-4 py-1.5 text-sm font-semibold transition ${
+                  tab === m
+                    ? "bg-white text-[var(--color-brand)] shadow-sm"
+                    : "text-slate-500 hover:text-slate-700"
+                }`}
+              >
+                {TABS[m].label}
+              </button>
+            ))}
+          </div>
+          <span className="hidden text-xs text-slate-400 sm:block">{TABS[tab].tagline}</span>
+        </div>
+
         {!hasKey && (
           <div className="bg-amber-50 px-6 py-2 text-center text-xs text-amber-800">
             No <code>ANTHROPIC_API_KEY</code> found on the server — add it to <code>.env</code> and restart to enable the agent.
@@ -124,11 +193,11 @@ export default function App() {
 
         <div ref={threadRef} className="flex-1 overflow-y-auto px-4 py-6 sm:px-8">
           <div className="mx-auto max-w-3xl">
-            {messages.length === 0 ? (
-              <Welcome onPick={send} />
+            {messages.filter((m) => !m.hidden).length === 0 ? (
+              <Welcome tab={tab} onPick={send} />
             ) : (
               <div className="space-y-6">
-                {messages.map((m, i) => <Bubble key={i} m={m} />)}
+                {messages.map((m, i) => (m.hidden ? null : <Bubble key={i} m={m} />))}
                 {working && (
                   <div className="flex items-center gap-2 text-xs text-slate-500">
                     <span className="typing-dot">●</span>
@@ -178,16 +247,29 @@ export default function App() {
   );
 }
 
-function Welcome({ onPick }: { onPick: (t: string) => void }) {
+function Welcome({ tab, onPick }: { tab: Mode; onPick: (t: string, opts?: { hidden?: boolean }) => void }) {
+  const t = TABS[tab];
   return (
     <div className="animate-rise pt-6">
-      <h1 className="text-2xl font-semibold text-slate-900">Manage your revenue cycle by asking.</h1>
-      <p className="mt-2 max-w-xl text-sm text-slate-500">
-        Cadence pulls live numbers across eligibility, prior auth, registration, coding, and denials — then tells you what's
-        working, what's bleeding money, and what to do about it.
-      </p>
-      <div className="mt-6 grid gap-2 sm:grid-cols-2">
-        {SUGGESTIONS.map((s) => (
+      <h1 className="text-2xl font-semibold text-slate-900">{t.heading}</h1>
+      <p className="mt-2 max-w-xl text-sm text-slate-500">{t.blurb}</p>
+
+      {t.featured && (
+        <button
+          onClick={() => onPick(t.featured!.prompt, { hidden: true })}
+          className="group mt-6 flex w-full items-center gap-3 rounded-xl bg-[var(--color-brand)] px-4 py-3.5 text-left shadow-sm ring-1 ring-black/5 transition hover:brightness-105"
+        >
+          <span className="text-xl leading-none">☀️</span>
+          <span className="min-w-0 flex-1">
+            <span className="block text-sm font-semibold text-white">{t.featured.label}</span>
+            <span className="block text-xs text-white/80">{t.featured.sub}</span>
+          </span>
+          <span className="shrink-0 text-white/90 transition group-hover:translate-x-0.5">→</span>
+        </button>
+      )}
+
+      <div className="mt-3 grid gap-2 sm:grid-cols-2">
+        {t.suggestions.map((s) => (
           <button
             key={s}
             onClick={() => onPick(s)}
@@ -214,7 +296,7 @@ function Bubble({ m }: { m: ChatMessage }) {
       {m.cards && m.cards.length > 0 && (
         <div className="space-y-3">{m.cards.map((c, i) => <CardView key={i} card={c} />)}</div>
       )}
-      {m.text && <div className="prose-tight whitespace-pre-wrap text-sm leading-relaxed text-slate-800">{m.text}</div>}
+      {m.text && <Markdown>{m.text}</Markdown>}
     </div>
   );
 }
@@ -239,7 +321,7 @@ function KpiRow({ k }: { k: Kpi }) {
       <span className="text-xs text-slate-300">{k.label}</span>
       <span className="flex items-center gap-1.5">
         <span className="text-xs font-semibold text-white">{fmt(k)}</span>
-        <span className={`text-[10px] ${good ? "text-emerald-400" : "text-rose-400"}`}>{arrow}</span>
+        <span className={`text-[10px] ${good ? "text-[var(--color-accent)]" : "text-rose-400"}`}>{arrow}</span>
       </span>
     </div>
   );

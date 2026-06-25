@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// Synthetic revenue-cycle dataset for "Northstar Health Partners", a fictional
+// Synthetic revenue-cycle dataset for "Allina Health", a fictional
 // mid-size ambulatory provider group serviced by Optum RCM.
 //
 // All numbers are invented but tuned to realistic 2026 industry benchmarks so the
@@ -9,7 +9,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const ORG = {
-  name: "Northstar Health Partners",
+  name: "Allina Health",
   type: "Ambulatory provider group (42 clinics)",
   rcmPartner: "Optum",
   asOf: "2026-06-22",
