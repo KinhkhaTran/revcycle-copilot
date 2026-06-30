@@ -108,6 +108,9 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [working, setWorking] = useState<string | null>(null);
   const threadRef = useRef<HTMLDivElement>(null);
+  // Follow the streaming answer only while the user is already near the bottom,
+  // so they can scroll up to read the top while the rest still loads below.
+  const stickRef = useRef(true);
 
   const messages = threads[tab];
   const setMessages = (updater: (prev: ChatMessage[]) => ChatMessage[], mode: Mode = tab) =>
@@ -127,11 +130,21 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    threadRef.current?.scrollTo({ top: threadRef.current.scrollHeight, behavior: "smooth" });
+    if (!stickRef.current) return; // user scrolled up — don't yank them back down
+    const el = threadRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
   }, [messages, working]);
+
+  function handleThreadScroll() {
+    const el = threadRef.current;
+    if (!el) return;
+    // Near the bottom → keep following; scrolled up → stop following.
+    stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+  }
 
   async function send(text: string, opts?: { hidden?: boolean }) {
     if (!text.trim() || busy) return;
+    stickRef.current = true; // a new question follows from the start (until the user scrolls up)
     const mode = tab; // lock to the tab the message was sent from
     const userMsg: ChatMessage = { role: "user", text: text.trim(), hidden: opts?.hidden };
     const history = [...threads[mode], userMsg];
@@ -272,7 +285,7 @@ export default function App() {
           </div>
         )}
 
-        <div ref={threadRef} className="flex-1 overflow-y-auto px-4 py-6 sm:px-8">
+        <div ref={threadRef} onScroll={handleThreadScroll} className="flex-1 overflow-y-auto px-4 py-6 sm:px-8">
           <div className="mx-auto max-w-3xl">
             {messages.filter((m) => !m.hidden).length === 0 ? (
               <Welcome tab={tab} segment={segment} onPick={send} />
