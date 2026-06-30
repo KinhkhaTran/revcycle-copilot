@@ -19,7 +19,7 @@ app.get("/api/overview", (_req, res) => {
 
 // Streaming chat endpoint (Server-Sent Events).
 app.post("/api/chat", async (req, res) => {
-  const { messages, mode } = req.body || {};
+  const { messages, mode, segment } = req.body || {};
   if (!Array.isArray(messages) || messages.length === 0) {
     return res.status(400).json({ error: "messages[] required" });
   }
@@ -35,7 +35,7 @@ app.post("/api/chat", async (req, res) => {
   const send = (event) => res.write(`data: ${JSON.stringify(event)}\n\n`);
 
   try {
-    await runAgent(messages, send, mode === "learn" ? "learn" : "pro");
+    await runAgent(messages, send, mode === "learn" ? "learn" : "pro", segment);
     send({ type: "done" });
   } catch (err) {
     console.error("[agent error]", err);

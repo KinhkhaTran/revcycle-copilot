@@ -11,7 +11,6 @@
 export const ORG = {
   name: "Allina Health",
   type: "Ambulatory provider group (42 clinics)",
-  rcmPartner: "Optum",
   asOf: "2026-06-22",
   monthlyClaimVolume: 128400,
   monthlyNetRevenue: 38200000,

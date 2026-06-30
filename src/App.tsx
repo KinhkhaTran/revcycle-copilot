@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { streamChat, type Mode } from "./api";
+import { streamChat, type Mode, type Segment } from "./api";
 import CardView from "./components/CardView";
 import Markdown from "./components/Markdown";
 import type { Alert, ChatMessage, Kpi } from "./types";
@@ -8,6 +8,50 @@ import type { Alert, ChatMessage, Kpi } from "./types";
 // and to render well through the markdown component (headline → list → lever).
 const BRIEFING_PROMPT =
   "Good morning — give me my daily briefing. Pull the active alerts and the KPI overview first, then respond with exactly: a one-sentence headline on how the revenue cycle is doing today; then a `## Today's top 3 priorities` numbered list, each ranked by revenue impact with the dollar figure and its upstream root cause; then one closing sentence naming the single biggest lever to pull. Keep it tight and scannable — no preamble.";
+
+const FRONT_BRIEFING =
+  "Good morning — give me my front-end briefing (eligibility, prior authorization, patient registration). Pull the relevant alerts and front-end KPIs first, then respond with exactly: a one-sentence headline on how the front-end is doing today; then a `## Today's top 3 front-end priorities` numbered list, each ranked by revenue impact with the dollar figure and the downstream denials it prevents; then one closing sentence naming the single biggest lever. Keep it tight and scannable — no preamble.";
+
+const BACK_BRIEFING =
+  "Good morning — give me my back-end briefing (denials & appeals, accounts receivable, cash). Pull the relevant alerts and back-end KPIs first, then respond with exactly: a one-sentence headline on how the back-end is doing today; then a `## Today's top 3 back-end priorities` numbered list, each ranked by revenue impact with the dollar figure and, where it applies, the upstream front-end root cause; then one closing sentence naming the single biggest lever. Keep it tight and scannable — no preamble.";
+
+// The segment selector shown on the Productivity tab.
+const SEGMENTS: { key: Segment; label: string }[] = [
+  { key: "all", label: "All" },
+  { key: "front", label: "Front-end" },
+  { key: "back", label: "Back-end" },
+];
+
+// Per-segment featured briefing + starter chips for the Productivity tab.
+const PRO_SEGMENTS: Record<Segment, { featured: { label: string; sub: string; prompt: string }; suggestions: string[] }> = {
+  all: {
+    featured: { label: "Get my morning briefing", sub: "Your top 3 priorities by revenue impact, triaged", prompt: BRIEFING_PROMPT },
+    suggestions: [
+      "How is the team doing this week?",
+      "What productivity metrics should we put on our dashboard?",
+      "Which payer should I worry about for prior auth?",
+      "Why are our denials up, and where do they start?",
+    ],
+  },
+  front: {
+    featured: { label: "Get my front-end briefing", sub: "Eligibility, prior auth & registration — triaged", prompt: FRONT_BRIEFING },
+    suggestions: [
+      "How is eligibility verification performing?",
+      "Which payer is slowest on prior authorization?",
+      "Where are our registration errors coming from?",
+      "How much revenue is at risk from front-end gaps?",
+    ],
+  },
+  back: {
+    featured: { label: "Get my back-end briefing", sub: "Denials, appeals & A/R — triaged", prompt: BACK_BRIEFING },
+    suggestions: [
+      "Why are our denials up, and where do they start?",
+      "How are appeals performing — overturn rate and recovery?",
+      "What's happening with days in A/R and aging?",
+      "Which payer denies us the most?",
+    ],
+  },
+};
 
 const TABS: Record<Mode, {
   label: string;
@@ -58,6 +102,7 @@ export default function App() {
   const [orgName, setOrgName] = useState("Allina Health");
   const [hasKey, setHasKey] = useState(true);
   const [tab, setTab] = useState<Mode>("learn");
+  const [segment, setSegment] = useState<Segment>("all");
   const [threads, setThreads] = useState<Record<Mode, ChatMessage[]>>({ learn: [], pro: [] });
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
@@ -97,7 +142,7 @@ export default function App() {
 
     const wire = history.map((m) => ({ role: m.role, content: m.text }));
 
-    await streamChat(wire, mode, (e) => {
+    await streamChat(wire, mode, mode === "pro" ? segment : "all", (e) => {
       setMessages((prev) => {
         const last = prev[prev.length - 1];
         if (last?.role !== "assistant") return prev;
@@ -116,8 +161,11 @@ export default function App() {
     setWorking(null);
   }
 
+  // The rail follows the Productivity segment; on the Learn tab it always shows everything.
+  const activeSegment: Segment = tab === "pro" ? segment : "all";
   const front = kpis.filter((k) => k.stage === "front");
   const rest = kpis.filter((k) => k.stage !== "front");
+  const shownAlerts = activeSegment === "all" ? alerts : alerts.filter((a) => a.stage === activeSegment);
 
   return (
     <div className="flex h-full">
@@ -127,7 +175,7 @@ export default function App() {
           <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[var(--color-brand)] text-sm font-bold text-white">C</div>
           <div>
             <div className="text-sm font-semibold text-white">Cadence</div>
-            <div className="text-[11px] text-slate-400">Rev Cycle Copilot</div>
+            <div className="text-[11px] text-slate-400">Rev Cycle Agent</div>
           </div>
         </div>
 
@@ -136,28 +184,41 @@ export default function App() {
             <span className="text-[var(--color-brand)]">{orgName.split(" ")[0]}</span>{" "}
             <span className="text-[var(--color-accent)]">{orgName.split(" ").slice(1).join(" ")}</span>
           </div>
-          <div className="text-[11px] text-slate-500">Serviced by Optum · synthetic demo data</div>
+          <div className="text-[10px] text-slate-400">in partnership with Optum</div>
+          <div className="text-[11px] font-medium text-amber-300/90">Mock demo data — fictional numbers, not real Allina data</div>
         </div>
 
         <div className="flex-1 overflow-y-auto px-5 py-4">
-          <RailSection label="Front-end" accent>
-            {front.map((k) => <KpiRow key={k.id} k={k} />)}
-          </RailSection>
-          <RailSection label="Mid & back-end">
-            {rest.map((k) => <KpiRow key={k.id} k={k} />)}
-          </RailSection>
+          {activeSegment === "all" ? (
+            <>
+              <RailSection label="Front-end" accent>
+                {front.map((k) => <KpiRow key={k.id} k={k} />)}
+              </RailSection>
+              <RailSection label="Mid & back-end">
+                {rest.map((k) => <KpiRow key={k.id} k={k} />)}
+              </RailSection>
+            </>
+          ) : (
+            <RailSection label={activeSegment === "front" ? "Front-end" : "Back-end"} accent={activeSegment === "front"}>
+              {kpis.filter((k) => k.stage === activeSegment).map((k) => <KpiRow key={k.id} k={k} />)}
+            </RailSection>
+          )}
 
           <div className="mt-5">
             <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-400">Active alerts</div>
             <ul className="space-y-2">
-              {alerts.map((a) => (
-                <li key={a.title} className="rounded-lg bg-white/5 p-2.5">
-                  <div className="flex items-center gap-1.5">
-                    <span className={`h-1.5 w-1.5 rounded-full ${a.severity === "high" ? "bg-rose-400" : "bg-amber-400"}`} />
-                    <span className="text-xs font-medium text-slate-100">{a.title}</span>
-                  </div>
-                </li>
-              ))}
+              {shownAlerts.length === 0 ? (
+                <li className="px-2.5 text-[11px] text-slate-500">No active alerts in this area.</li>
+              ) : (
+                shownAlerts.map((a) => (
+                  <li key={a.title} className="rounded-lg bg-white/5 p-2.5">
+                    <div className="flex items-center gap-1.5">
+                      <span className={`h-1.5 w-1.5 rounded-full ${a.severity === "high" ? "bg-rose-400" : "bg-amber-400"}`} />
+                      <span className="text-xs font-medium text-slate-100">{a.title}</span>
+                    </div>
+                  </li>
+                ))
+              )}
             </ul>
           </div>
         </div>
@@ -185,6 +246,26 @@ export default function App() {
           <span className="hidden text-xs text-slate-400 sm:block">{TABS[tab].tagline}</span>
         </div>
 
+        {/* Segment selector — scopes the rail, the chips, and the agent to a part of the cycle */}
+        {tab === "pro" && (
+          <div className="flex items-center gap-2 border-b border-slate-200 bg-white px-4 py-2 sm:px-8">
+            <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">View</span>
+            <div className="inline-flex rounded-lg bg-slate-100 p-0.5">
+              {SEGMENTS.map((s) => (
+                <button
+                  key={s.key}
+                  onClick={() => setSegment(s.key)}
+                  className={`rounded-md px-3 py-1 text-xs font-semibold transition ${
+                    segment === s.key ? "bg-white text-[var(--color-brand)] shadow-sm" : "text-slate-500 hover:text-slate-700"
+                  }`}
+                >
+                  {s.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
         {!hasKey && (
           <div className="bg-amber-50 px-6 py-2 text-center text-xs text-amber-800">
             No <code>ANTHROPIC_API_KEY</code> found on the server — add it to <code>.env</code> and restart to enable the agent.
@@ -194,7 +275,7 @@ export default function App() {
         <div ref={threadRef} className="flex-1 overflow-y-auto px-4 py-6 sm:px-8">
           <div className="mx-auto max-w-3xl">
             {messages.filter((m) => !m.hidden).length === 0 ? (
-              <Welcome tab={tab} onPick={send} />
+              <Welcome tab={tab} segment={segment} onPick={send} />
             ) : (
               <div className="space-y-6">
                 {messages.map((m, i) => (m.hidden ? null : <Bubble key={i} m={m} />))}
@@ -239,7 +320,7 @@ export default function App() {
             </button>
           </form>
           <p className="mx-auto mt-1.5 max-w-3xl text-center text-[11px] text-slate-400">
-            Cadence runs on Claude Opus 4.8 over synthetic revenue-cycle data. Verify before acting on real operations.
+            Cadence runs on Claude Opus 4.8 over mock revenue-cycle data — every figure here is fabricated for this demo, not real Allina data. Verify before acting on real operations.
           </p>
         </div>
       </main>
@@ -247,29 +328,33 @@ export default function App() {
   );
 }
 
-function Welcome({ tab, onPick }: { tab: Mode; onPick: (t: string, opts?: { hidden?: boolean }) => void }) {
+function Welcome({ tab, segment, onPick }: { tab: Mode; segment: Segment; onPick: (t: string, opts?: { hidden?: boolean }) => void }) {
   const t = TABS[tab];
+  // On Productivity, the featured briefing and chips follow the selected segment.
+  const content = tab === "pro" ? PRO_SEGMENTS[segment] : null;
+  const featured = content?.featured;
+  const suggestions = content ? content.suggestions : t.suggestions;
   return (
     <div className="animate-rise pt-6">
       <h1 className="text-2xl font-semibold text-slate-900">{t.heading}</h1>
       <p className="mt-2 max-w-xl text-sm text-slate-500">{t.blurb}</p>
 
-      {t.featured && (
+      {featured && (
         <button
-          onClick={() => onPick(t.featured!.prompt, { hidden: true })}
+          onClick={() => onPick(featured.prompt, { hidden: true })}
           className="group mt-6 flex w-full items-center gap-3 rounded-xl bg-[var(--color-brand)] px-4 py-3.5 text-left shadow-sm ring-1 ring-black/5 transition hover:brightness-105"
         >
           <span className="text-xl leading-none">☀️</span>
           <span className="min-w-0 flex-1">
-            <span className="block text-sm font-semibold text-white">{t.featured.label}</span>
-            <span className="block text-xs text-white/80">{t.featured.sub}</span>
+            <span className="block text-sm font-semibold text-white">{featured.label}</span>
+            <span className="block text-xs text-white/80">{featured.sub}</span>
           </span>
           <span className="shrink-0 text-white/90 transition group-hover:translate-x-0.5">→</span>
         </button>
       )}
 
       <div className="mt-3 grid gap-2 sm:grid-cols-2">
-        {t.suggestions.map((s) => (
+        {suggestions.map((s) => (
           <button
             key={s}
             onClick={() => onPick(s)}
