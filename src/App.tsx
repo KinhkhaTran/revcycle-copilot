@@ -174,6 +174,26 @@ export default function App() {
     setWorking(null);
   }
 
+  // "Explain this number" — clicking a KPI asks the agent about it, pitched to the active role.
+  function explainKpi(k: Kpi) {
+    const v = fmt(k);
+    const prompt =
+      tab === "learn"
+        ? `Explain our ${k.label} (${v}) like I'm new to the revenue cycle: what is it, what's a good benchmark, what moves it, and how are we doing? Show the trend if you have it.`
+        : `Explain our ${k.label} (${v}): why is it there, what's driving it (trace it upstream to the front end if that's where it starts), and what's the single highest-impact action? Show the trend and the breakdown.`;
+    send(prompt);
+  }
+
+  // Phase 2: clicking a value inside an answer card drills into that topic.
+  function explainTopic(topic: string) {
+    if (!topic) return;
+    const prompt =
+      tab === "learn"
+        ? `Tell me more about "${topic}" like I'm new to the revenue cycle — what it means, why it matters, and how we're doing.`
+        : `Dig into "${topic}" — why is it where it is, what's driving it, and what's the highest-impact action? Use the data.`;
+    send(prompt);
+  }
+
   // The rail follows the Productivity segment; on the Learn tab it always shows everything.
   const activeSegment: Segment = tab === "pro" ? segment : "all";
   const front = kpis.filter((k) => k.stage === "front");
@@ -202,18 +222,19 @@ export default function App() {
         </div>
 
         <div className="flex-1 overflow-y-auto px-5 py-4">
+          <div className="mb-3 text-[10px] text-slate-500">Tap any metric to ask why →</div>
           {activeSegment === "all" ? (
             <>
               <RailSection label="Front-end" accent>
-                {front.map((k) => <KpiRow key={k.id} k={k} />)}
+                {front.map((k) => <KpiRow key={k.id} k={k} onExplain={explainKpi} />)}
               </RailSection>
               <RailSection label="Mid & back-end">
-                {rest.map((k) => <KpiRow key={k.id} k={k} />)}
+                {rest.map((k) => <KpiRow key={k.id} k={k} onExplain={explainKpi} />)}
               </RailSection>
             </>
           ) : (
             <RailSection label={activeSegment === "front" ? "Front-end" : "Back-end"} accent={activeSegment === "front"}>
-              {kpis.filter((k) => k.stage === activeSegment).map((k) => <KpiRow key={k.id} k={k} />)}
+              {kpis.filter((k) => k.stage === activeSegment).map((k) => <KpiRow key={k.id} k={k} onExplain={explainKpi} />)}
             </RailSection>
           )}
 
@@ -291,7 +312,7 @@ export default function App() {
               <Welcome tab={tab} segment={segment} onPick={send} />
             ) : (
               <div className="space-y-6">
-                {messages.map((m, i) => (m.hidden ? null : <Bubble key={i} m={m} />))}
+                {messages.map((m, i) => (m.hidden ? null : <Bubble key={i} m={m} onExplain={explainTopic} />))}
                 {working && (
                   <div className="flex items-center gap-2 text-xs text-slate-500">
                     <span className="typing-dot">●</span>
@@ -381,7 +402,7 @@ function Welcome({ tab, segment, onPick }: { tab: Mode; segment: Segment; onPick
   );
 }
 
-function Bubble({ m }: { m: ChatMessage }) {
+function Bubble({ m, onExplain }: { m: ChatMessage; onExplain: (topic: string) => void }) {
   if (m.role === "user") {
     return (
       <div className="flex justify-end">
@@ -392,7 +413,7 @@ function Bubble({ m }: { m: ChatMessage }) {
   return (
     <div className="animate-rise space-y-3">
       {m.cards && m.cards.length > 0 && (
-        <div className="space-y-3">{m.cards.map((c, i) => <CardView key={i} card={c} />)}</div>
+        <div className="space-y-3">{m.cards.map((c, i) => <CardView key={i} card={c} onExplain={onExplain} />)}</div>
       )}
       {m.text && <Markdown>{m.text}</Markdown>}
     </div>
@@ -411,17 +432,24 @@ function RailSection({ label, accent, children }: { label: string; accent?: bool
   );
 }
 
-function KpiRow({ k }: { k: Kpi }) {
+function KpiRow({ k, onExplain }: { k: Kpi; onExplain: (k: Kpi) => void }) {
   const good = k.goodDirection === "up" ? k.value >= k.benchmark : k.value <= k.benchmark;
   const arrow = k.trend === "flat" ? "→" : k.trend === "up" ? "▲" : "▼";
   return (
-    <div className="flex items-center justify-between rounded-lg px-2 py-1.5 hover:bg-white/5">
-      <span className="text-xs text-slate-300">{k.label}</span>
+    <button
+      onClick={() => onExplain(k)}
+      title={`Explain ${k.label}`}
+      className="group flex w-full items-center justify-between rounded-lg px-2 py-1.5 text-left transition hover:bg-white/10"
+    >
+      <span className="flex items-center gap-1 text-xs text-slate-300 transition group-hover:text-white">
+        {k.label}
+        <span className="text-[var(--color-brand)] opacity-0 transition group-hover:opacity-100">?</span>
+      </span>
       <span className="flex items-center gap-1.5">
         <span className="text-xs font-semibold text-white">{fmt(k)}</span>
         <span className={`text-[10px] ${good ? "text-[var(--color-accent)]" : "text-rose-400"}`}>{arrow}</span>
       </span>
-    </div>
+    </button>
   );
 }
 
