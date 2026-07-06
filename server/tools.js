@@ -4,11 +4,13 @@
 //   - forModel: the data handed back to Claude as the tool_result (it reasons on this)
 //   - card:     a viz spec streamed to the UI so the answer renders as generative cards
 //
-// Card types the frontend knows how to render: stat | bar | line | donut | table | alerts
+// Card types the frontend knows how to render:
+//   stat | bar | line | donut | table | alerts | funnel | impact | claim | letter
 
 import {
   ORG, TRENDS, KPIS, ELIGIBILITY, PRIOR_AUTH, REGISTRATION,
   CODING, DENIALS, FINANCIALS, STAFF, TEAMS, ALERTS,
+  CLAIMS, PAYER_SCORECARD, FUNNEL, LEVERS,
 } from "./data.js";
 
 export const TOOLS = [
@@ -100,6 +102,8 @@ export const TOOLS = [
             "denialRate",
             "daysInAR",
             "codingBacklog",
+            "posCollections",
+            "netCollectionRate",
           ],
           description: "Which metric to trend.",
         },
@@ -120,6 +124,80 @@ export const TOOLS = [
       "Proactive 'what is bleeding money this week' alerts the system has flagged across the cycle, with severity. Call this when the user asks what to focus on, what's wrong, or for a proactive summary.",
     input_schema: { type: "object", properties: {}, additionalProperties: false },
   },
+  {
+    name: "get_payer_scorecard",
+    description:
+      "One unified per-payer scorecard: denial rate, PA turnaround, average days to pay, appeal overturn rate, net collection %, and monthly billed dollars. Best single tool for 'which payer is my problem' or payer-comparison questions.",
+    input_schema: { type: "object", properties: {}, additionalProperties: false },
+  },
+  {
+    name: "get_cycle_funnel",
+    description:
+      "The month's claim flow front-to-back as a funnel: submitted → passed first-pass edits → denied → appealed → overturned & paid. Use for 'walk me through the flow', leakage, or big-picture volume questions.",
+    input_schema: { type: "object", properties: {}, additionalProperties: false },
+  },
+  {
+    name: "get_claims_worklist",
+    description:
+      "The live worklist of individual denied claims (synthetic, initials only): claim id, payer, service, dollars, CARC code, denial reason, root cause, age, and appeal deadline. Use for 'show me the actual denied claims', 'what should my team work first', or deadline-risk questions. Optionally filter.",
+    input_schema: {
+      type: "object",
+      properties: {
+        payer: { type: "string", description: "Optional payer to filter to." },
+        stage: { type: "string", enum: ["front", "mid", "back"], description: "Optional root-cause stage filter." },
+        min_amount: { type: "number", description: "Optional minimum claim dollar amount." },
+        sort_by: { type: "string", enum: ["amount", "deadline", "age"], description: "Sort order. 'deadline' = most urgent appeal deadlines first. Default 'amount'." },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "get_claim_detail",
+    description:
+      "Full detail on ONE denied claim from the worklist by claim id (e.g. 'CLM-20461'): denial code, root cause, dollars, deadline, and assignee. Use when the user asks about a specific claim.",
+    input_schema: {
+      type: "object",
+      properties: {
+        claim_id: { type: "string", description: "The claim id, e.g. 'CLM-20461'." },
+      },
+      required: ["claim_id"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "draft_appeal_letter",
+    description:
+      "Pull everything needed to draft a payer appeal letter for ONE denied claim (claim facts, denial code meaning, payer, deadline) and render a letter card in the UI. After calling it, write the actual appeal letter body yourself INSIDE the letter card placeholder — see the tool result instructions.",
+    input_schema: {
+      type: "object",
+      properties: {
+        claim_id: { type: "string", description: "The claim id to appeal, e.g. 'CLM-20461'." },
+      },
+      required: ["claim_id"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "simulate_improvement",
+    description:
+      "What-if ROI simulator. Given an operational lever and a target value, computes the estimated monthly dollars recovered and denials prevented, and renders a before/after impact card. Use for 'what would it be worth if...', 'ROI of improving X', or prioritization questions.",
+    input_schema: {
+      type: "object",
+      properties: {
+        lever: {
+          type: "string",
+          enum: Object.keys(LEVERS),
+          description: "Which lever to simulate.",
+        },
+        target_value: {
+          type: "number",
+          description: "The target value for the lever (same unit as the lever, e.g. 85 for 85%). Omit to simulate reaching the credible ceiling.",
+        },
+      },
+      required: ["lever"],
+      additionalProperties: false,
+    },
+  },
 ];
 
 const METRIC_META = {
@@ -129,13 +207,28 @@ const METRIC_META = {
   denialRate: { label: "Initial denial rate", unit: "%", goodDirection: "down" },
   daysInAR: { label: "Days in A/R", unit: "days", goodDirection: "down" },
   codingBacklog: { label: "Coding backlog", unit: "charts", goodDirection: "down" },
+  posCollections: { label: "POS collections", unit: "$K/mo", goodDirection: "up" },
+  netCollectionRate: { label: "Net collection rate", unit: "%", goodDirection: "up" },
+};
+
+// Plain-English CARC meanings the agent can cite when appealing.
+const CARC_MEANINGS = {
+  "CO-16": "Claim/service lacks information or has a submission/billing error",
+  "CO-18": "Exact duplicate claim/service",
+  "CO-22": "Care may be covered by another payer per coordination of benefits",
+  "CO-27": "Expenses incurred after coverage terminated",
+  "CO-29": "The time limit for filing has expired",
+  "CO-50": "Non-covered services: not deemed a medical necessity by the payer",
+  "CO-109": "Claim/service not covered by this payer/contractor",
+  "CO-140": "Patient/insured health identification number and name do not match",
+  "CO-197": "Precertification/authorization/notification absent",
 };
 
 export function executeTool(name, input = {}) {
   switch (name) {
     case "get_kpi_overview": {
       return {
-        forModel: { org: ORG, kpis: KPIS },
+        forModel: { org: ORG, kpis: KPIS.map(({ spark, ...k }) => k) },
         card: {
           type: "stat",
           title: "Revenue-cycle KPI overview",
@@ -246,10 +339,10 @@ export function executeTool(name, input = {}) {
           columns: [
             { key: "name", label: "Name" },
             { key: "role", label: "Role" },
-            { key: "productivityPct", label: "Prod %", format: "pct" },
+            { key: "productivityPct", label: "Prod %", format: "prod" },
             { key: "throughputPerDay", label: "Per day" },
             { key: "target", label: "Target" },
-            { key: "queue", label: "Queue" },
+            { key: "queue", label: "Queue", format: "queue" },
             { key: "accuracyPct", label: "Accuracy", format: "pct" },
           ],
           rows: roster,
@@ -305,9 +398,146 @@ export function executeTool(name, input = {}) {
       };
     }
 
+    case "get_payer_scorecard": {
+      return {
+        forModel: { scorecard: PAYER_SCORECARD },
+        card: {
+          type: "table",
+          title: "Payer scorecard",
+          subtitle: "Denials, prior auth, payment speed, and appeal outcomes by payer",
+          columns: [
+            { key: "payer", label: "Payer" },
+            { key: "denialRatePct", label: "Denial %", format: "heat_low" },
+            { key: "paTurnaroundHrs", label: "PA hrs", format: "heat_low" },
+            { key: "avgDaysToPay", label: "Days to pay", format: "heat_low" },
+            { key: "overturnPct", label: "Overturn %", format: "heat_high" },
+            { key: "netCollectionPct", label: "Net coll %", format: "heat_high" },
+            { key: "monthlyBilled", label: "Billed/mo", format: "money" },
+          ],
+          rows: PAYER_SCORECARD,
+        },
+      };
+    }
+
+    case "get_cycle_funnel": {
+      return {
+        forModel: { funnel: FUNNEL, recoveredMonthly: DENIALS.recoveredMonthly, writeOffMonthly: DENIALS.writeOffMonthly },
+        card: {
+          type: "funnel",
+          title: "This month's claim flow",
+          subtitle: `${ORG.name} · ${ORG.monthlyClaimVolume.toLocaleString()} claims · $${(DENIALS.writeOffMonthly / 1e6).toFixed(2)}M written off`,
+          steps: FUNNEL,
+        },
+      };
+    }
+
+    case "get_claims_worklist": {
+      let rows = [...CLAIMS];
+      if (input.payer) rows = rows.filter((c) => c.payer.toLowerCase().includes(String(input.payer).toLowerCase()));
+      if (input.stage) rows = rows.filter((c) => c.stage === input.stage);
+      if (typeof input.min_amount === "number") rows = rows.filter((c) => c.amount >= input.min_amount);
+      const sortBy = input.sort_by || "amount";
+      rows.sort((a, b) =>
+        sortBy === "deadline" ? a.deadlineDays - b.deadlineDays
+        : sortBy === "age" ? b.ageDays - a.ageDays
+        : b.amount - a.amount
+      );
+      const totalAtRisk = rows.reduce((s, c) => s + c.amount, 0);
+      return {
+        forModel: { count: rows.length, totalDollarsAtRisk: totalAtRisk, claims: rows },
+        card: {
+          type: "table",
+          title: "Denied-claim worklist",
+          subtitle: `${rows.length} claims · $${totalAtRisk.toLocaleString()} at risk${input.payer ? ` · ${input.payer}` : ""}`,
+          columns: [
+            { key: "id", label: "Claim" },
+            { key: "payer", label: "Payer" },
+            { key: "service", label: "Service" },
+            { key: "amount", label: "Amount", format: "money" },
+            { key: "carc", label: "CARC" },
+            { key: "rootCause", label: "Root cause" },
+            { key: "deadlineDays", label: "Deadline", format: "deadline" },
+          ],
+          rows,
+        },
+      };
+    }
+
+    case "get_claim_detail": {
+      const claim = findClaim(input.claim_id);
+      if (!claim) return { forModel: { error: `No claim found matching '${input.claim_id}'. Valid ids look like 'CLM-20461'.` }, card: null };
+      return {
+        forModel: { ...claim, carcMeaning: CARC_MEANINGS[claim.carc] || null },
+        card: { type: "claim", title: `Claim ${claim.id}`, claim: { ...claim, carcMeaning: CARC_MEANINGS[claim.carc] || "" } },
+      };
+    }
+
+    case "draft_appeal_letter": {
+      const claim = findClaim(input.claim_id);
+      if (!claim) return { forModel: { error: `No claim found matching '${input.claim_id}'. Valid ids look like 'CLM-20461'.` }, card: null };
+      return {
+        forModel: {
+          claim: { ...claim, carcMeaning: CARC_MEANINGS[claim.carc] || null },
+          org: { name: ORG.name, type: ORG.type },
+          instructions:
+            "A letter card was rendered in the UI with an empty body. Now WRITE the appeal letter yourself: output it inside a fenced block that starts with ```letter and ends with ``` immediately after the [[chart:...]] marker for this tool. Address the payer's appeals department, reference the claim id / DOS / CARC code, argue the specific root cause, request reprocessing, and sign as the Revenue Cycle Department. Keep it under 250 words, professional, firm.",
+        },
+        card: {
+          type: "letter",
+          title: `Appeal draft — ${claim.id} (${claim.payer})`,
+          claim: { id: claim.id, payer: claim.payer, amount: claim.amount, carc: claim.carc, service: claim.service, dos: claim.dos, deadlineDays: claim.deadlineDays },
+        },
+      };
+    }
+
+    case "simulate_improvement": {
+      const lever = LEVERS[input.lever];
+      if (!lever) return { forModel: { error: `Unknown lever '${input.lever}'.` }, card: null };
+      const target = clampTarget(lever, input.target_value);
+      const points = Math.max(0, target - lever.current);
+      const dollars = Math.round(points * lever.dollarsPerPoint);
+      const denials = Math.round(points * lever.denialsPerPoint);
+      return {
+        forModel: {
+          lever: lever.label,
+          current: lever.current,
+          target,
+          credibleCeiling: lever.ceiling,
+          unit: lever.unit,
+          estMonthlyDollarsRecovered: dollars,
+          estAnnualDollarsRecovered: dollars * 12,
+          estMonthlyDenialsPrevented: denials,
+          mechanism: lever.how,
+          note: "Linear estimate off the current book of business — treat as directional, not a promise.",
+        },
+        card: {
+          type: "impact",
+          title: `What-if: ${lever.label} → ${target}${lever.unit}`,
+          subtitle: lever.how,
+          current: lever.current,
+          target,
+          ceiling: lever.ceiling,
+          unit: lever.unit,
+          monthlyDollars: dollars,
+          annualDollars: dollars * 12,
+          denialsPrevented: denials,
+        },
+      };
+    }
+
     default:
       return { forModel: { error: `Unknown tool: ${name}` }, card: null };
   }
+}
+
+function findClaim(id) {
+  const q = String(id || "").trim().toUpperCase();
+  return CLAIMS.find((c) => c.id === q) || CLAIMS.find((c) => c.id.endsWith(q.replace(/^CLM-?/, "")));
+}
+
+function clampTarget(lever, target) {
+  const t = typeof target === "number" ? target : lever.ceiling;
+  return Math.min(Math.max(t, lever.current), lever.ceiling);
 }
 
 function denialSummary() {

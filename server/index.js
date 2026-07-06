@@ -4,7 +4,7 @@ import path from "path";
 import fs from "fs";
 import { fileURLToPath } from "url";
 import { runAgent } from "./agent.js";
-import { KPIS, ALERTS, ORG } from "./data.js";
+import { KPIS, ALERTS, ORG, FUNNEL, FINANCIALS } from "./data.js";
 
 const app = express();
 app.use(express.json());
@@ -14,7 +14,14 @@ const distDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "d
 
 // Lightweight context the UI loads on boot (no LLM call).
 app.get("/api/overview", (_req, res) => {
-  res.json({ org: ORG, kpis: KPIS, alerts: ALERTS, hasKey: Boolean(process.env.ANTHROPIC_API_KEY) });
+  res.json({
+    org: ORG,
+    kpis: KPIS,
+    alerts: ALERTS,
+    funnel: FUNNEL,
+    financials: FINANCIALS,
+    hasKey: Boolean(process.env.ANTHROPIC_API_KEY),
+  });
 });
 
 // Streaming chat endpoint (Server-Sent Events).
@@ -34,12 +41,22 @@ app.post("/api/chat", async (req, res) => {
 
   const send = (event) => res.write(`data: ${JSON.stringify(event)}\n\n`);
 
+  // If the client disconnects (Stop button / navigates away) before we've
+  // finished writing, abort the model call. Guard on writableEnded so a normal
+  // completion (we call res.end() ourselves) doesn't count as a disconnect.
+  const ac = new AbortController();
+  res.on("close", () => {
+    if (!res.writableEnded) ac.abort();
+  });
+
   try {
-    await runAgent(messages, send, mode === "learn" ? "learn" : "pro", segment);
-    send({ type: "done" });
+    await runAgent(messages, send, mode === "learn" ? "learn" : "pro", segment, ac.signal);
+    if (!ac.signal.aborted) send({ type: "done" });
   } catch (err) {
-    console.error("[agent error]", err);
-    send({ type: "error", message: String(err?.message || err) });
+    if (!ac.signal.aborted) {
+      console.error("[agent error]", err);
+      send({ type: "error", message: String(err?.message || err) });
+    }
   } finally {
     res.end();
   }

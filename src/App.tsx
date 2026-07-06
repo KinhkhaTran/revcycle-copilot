@@ -1,8 +1,15 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { streamChat, type Mode, type Segment } from "./api";
 import CardView from "./components/CardView";
+import CommandPalette, { type PaletteAction } from "./components/CommandPalette";
+import DashboardView from "./components/DashboardView";
 import Markdown from "./components/Markdown";
-import type { Alert, ChatMessage, Kpi } from "./types";
+import type { ChatMessage, Kpi, Overview } from "./types";
+
+// Sidebar navigation. "dashboard" is the Cycle-by-Stage flow rail; "ask" and
+// "learn" are the two chat modes (pro / learn) surfaced as their own pages.
+type Nav = "dashboard" | "ask" | "learn";
+const PAGE_LABEL: Record<Nav, string> = { dashboard: "Dashboard", ask: "Ask Cadence", learn: "Learn" };
 
 // Seeds the morning briefing. Phrased to lean on get_alerts + get_kpi_overview
 // and to render well through the markdown component (headline → list → lever).
@@ -27,10 +34,10 @@ const PRO_SEGMENTS: Record<Segment, { featured: { label: string; sub: string; pr
   all: {
     featured: { label: "Get my morning briefing", sub: "Your top 3 priorities by revenue impact, triaged", prompt: BRIEFING_PROMPT },
     suggestions: [
-      "How is the team doing this week?",
-      "What productivity metrics should we put on our dashboard?",
-      "Which payer should I worry about for prior auth?",
-      "Why are our denials up, and where do they start?",
+      "What should I focus on to recover the most revenue?",
+      "What would fixing eligibility auto-verify be worth?",
+      "Which payer is my biggest problem right now?",
+      "Which denied claims should we work first today?",
     ],
   },
   front: {
@@ -39,7 +46,7 @@ const PRO_SEGMENTS: Record<Segment, { featured: { label: string; sub: string; pr
       "How is eligibility verification performing?",
       "Which payer is slowest on prior authorization?",
       "Where are our registration errors coming from?",
-      "How much revenue is at risk from front-end gaps?",
+      "What's the ROI of pushing registration accuracy to 99%?",
     ],
   },
   back: {
@@ -47,8 +54,8 @@ const PRO_SEGMENTS: Record<Segment, { featured: { label: string; sub: string; pr
     suggestions: [
       "Why are our denials up, and where do they start?",
       "How are appeals performing — overturn rate and recovery?",
-      "What's happening with days in A/R and aging?",
-      "Which payer denies us the most?",
+      "Show me the denied claims closest to their filing deadline.",
+      "What would working 85% of our denials be worth?",
     ],
   },
 };
@@ -81,7 +88,7 @@ const TABS: Record<Mode, {
     tagline: "Department-wide — measure & act",
     heading: "Manage your revenue cycle by asking.",
     blurb:
-      "Cadence pulls live productivity and denial numbers, narrates what changed, and helps decide what to put on your Power BI dashboard — then tells you what to do about it.",
+      "Cadence pulls live numbers, traces every denial to its upstream root cause, simulates what fixes are worth in dollars, and drafts the appeal — then tells you what to do next.",
     featured: {
       label: "Get my morning briefing",
       sub: "Your top 3 priorities by revenue impact, triaged",
@@ -97,22 +104,27 @@ const TABS: Record<Mode, {
 };
 
 export default function App() {
-  const [kpis, setKpis] = useState<Kpi[]>([]);
-  const [alerts, setAlerts] = useState<Alert[]>([]);
-  const [orgName, setOrgName] = useState("Allina Health");
+  const [overview, setOverview] = useState<Overview | null>(null);
   const [hasKey, setHasKey] = useState(true);
-  const [tab, setTab] = useState<Mode>("learn");
+  const [nav, setNav] = useState<Nav>("dashboard");
+  const tab: Mode = nav === "learn" ? "learn" : "pro"; // chat mode derived from the active page
   const [segment, setSegment] = useState<Segment>("all");
   const [threads, setThreads] = useState<Record<Mode, ChatMessage[]>>({ learn: [], pro: [] });
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [working, setWorking] = useState<string | null>(null);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  // What the user clicked on (a KPI, chart slice, or alert). Attached as context
+  // to their next typed question instead of firing a canned prompt.
+  const [context, setContext] = useState<string | null>(null);
   const threadRef = useRef<HTMLDivElement>(null);
+  const abortRef = useRef<AbortController | null>(null); // lets the Stop button cancel a stream
   // Follow the streaming answer only while the user is already near the bottom,
   // so they can scroll up to read the top while the rest still loads below.
   const stickRef = useRef(true);
 
   const messages = threads[tab];
+  const started = messages.some((m) => !m.hidden); // once a conversation begins, swap hero → composer
   const setMessages = (updater: (prev: ChatMessage[]) => ChatMessage[], mode: Mode = tab) =>
     setThreads((prev) => ({ ...prev, [mode]: updater(prev[mode]) }));
 
@@ -120,13 +132,22 @@ export default function App() {
     fetch("/api/overview")
       .then((r) => r.json())
       .then((d) => {
-        setKpis(d.kpis || []);
-        setAlerts(d.alerts || []);
-        setOrgName(d.org?.name || orgName);
+        setOverview(d);
         setHasKey(Boolean(d.hasKey));
       })
       .catch(() => {});
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Global ⌘K / Ctrl+K.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setPaletteOpen((v) => !v);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
   }, []);
 
   useEffect(() => {
@@ -135,6 +156,11 @@ export default function App() {
     if (el) el.scrollTop = el.scrollHeight;
   }, [messages, working]);
 
+  // When something is selected, focus whichever composer is on screen (hero or bottom bar).
+  useEffect(() => {
+    if (context) document.getElementById("cadence-composer")?.focus();
+  }, [context]);
+
   function handleThreadScroll() {
     const el = threadRef.current;
     if (!el) return;
@@ -142,10 +168,10 @@ export default function App() {
     stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
   }
 
-  async function send(text: string, opts?: { hidden?: boolean }) {
+  async function send(text: string, opts?: { hidden?: boolean; mode?: Mode }) {
     if (!text.trim() || busy) return;
     stickRef.current = true; // a new question follows from the start (until the user scrolls up)
-    const mode = tab; // lock to the tab the message was sent from
+    const mode = opts?.mode ?? tab; // lock to the tab the message was sent from
     const userMsg: ChatMessage = { role: "user", text: text.trim(), hidden: opts?.hidden };
     const history = [...threads[mode], userMsg];
     setMessages(() => [...history, { role: "assistant", text: "", cards: [], tools: [] }], mode);
@@ -153,166 +179,180 @@ export default function App() {
     setBusy(true);
     setWorking(null);
 
-    const wire = history.map((m) => ({ role: m.role, content: m.text }));
+    const controller = new AbortController();
+    abortRef.current = controller;
 
-    await streamChat(wire, mode, mode === "pro" ? segment : "all", (e) => {
+    // Strip chart + suggestion markers from prior turns so the model doesn't
+    // see its own placeholders.
+    const wire = history.map((m) => ({
+      role: m.role,
+      content: m.text
+        .replace(/\[\[chart:[A-Za-z0-9_]+\]\]/g, "")
+        .replace(/\[\[suggest:[^\]]*\]\]/g, "")
+        .trim(),
+    }));
+
+    await streamChat(
+      wire,
+      mode,
+      mode === "pro" ? segment : "all",
+      (e) => {
       setMessages((prev) => {
         const last = prev[prev.length - 1];
         if (last?.role !== "assistant") return prev;
         const updated = { ...last };
-        if (e.type === "text") updated.text = last.text + e.text;
-        else if (e.type === "card") updated.cards = [...(last.cards || []), e.card];
-        else if (e.type === "tool_use") updated.tools = [...(last.tools || []), e.name];
+        if (e.type === "text") {
+          updated.text = last.text + e.text;
+          updated.tools = (last.tools || []).map((t) => ({ ...t, done: true }));
+        } else if (e.type === "card") updated.cards = [...(last.cards || []), e.card];
+        else if (e.type === "tool_use")
+          updated.tools = [...(last.tools || []).map((t) => ({ ...t, done: true })), { name: e.name, done: false }];
         else if (e.type === "error") updated.text = last.text + `\n\n⚠️ ${e.message}`;
         return [...prev.slice(0, -1), updated];
       }, mode);
       if (e.type === "tool_use") setWorking(prettyTool(e.name));
       if (e.type === "text") setWorking(null);
-    });
+      },
+      controller.signal
+    );
 
+    // Finalize: pull the trailing [[suggest: a | b | c]] line into chips.
+    setMessages((prev) => {
+      const last = prev[prev.length - 1];
+      if (last?.role !== "assistant") return prev;
+      const m = /\[\[suggest:([^\]]*)\]\]/.exec(last.text);
+      const suggestions = m
+        ? m[1].split("|").map((s) => s.trim()).filter(Boolean).slice(0, 3)
+        : undefined;
+      return [
+        ...prev.slice(0, -1),
+        {
+          ...last,
+          text: last.text.replace(/\[\[suggest:[^\]]*\]\]\s*/g, "").trimEnd(),
+          suggestions,
+          tools: (last.tools || []).map((t) => ({ ...t, done: true })),
+        },
+      ];
+    }, mode);
+
+    abortRef.current = null;
     setBusy(false);
     setWorking(null);
   }
 
-  // "Explain this number" — clicking a KPI asks the agent about it, pitched to the active role.
-  function explainKpi(k: Kpi) {
-    const v = fmt(k);
-    const prompt =
-      tab === "learn"
-        ? `Explain our ${k.label} (${v}) like I'm new to the revenue cycle: what is it, what's a good benchmark, what moves it, and how are we doing? Show the trend if you have it.`
-        : `Explain our ${k.label} (${v}): why is it there, what's driving it (trace it upstream to the front end if that's where it starts), and what's the single highest-impact action? Show the trend and the breakdown.`;
-    send(prompt);
+  // Stop button — abort the in-flight stream and keep whatever streamed so far.
+  function stop() {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setBusy(false);
+    setWorking(null);
+    // If we stopped before anything streamed, mark the empty bubble as stopped.
+    setMessages((prev) => {
+      const last = prev[prev.length - 1];
+      if (last?.role === "assistant" && !last.text && !(last.cards && last.cards.length)) {
+        return [...prev.slice(0, -1), { ...last, text: "_Stopped._" }];
+      }
+      return prev;
+    });
   }
 
-  // Phase 2: clicking a value inside an answer card drills into that topic.
+  // Route any AI action (dashboard drill-in, palette) into the pro chat.
+  function askInChat(prompt: string, opts?: { hidden?: boolean }) {
+    setNav("ask");
+    send(prompt, { ...opts, mode: "pro" });
+  }
+
+  // Clicking a KPI selects it as context — the user then types their own question.
+  function explainKpi(k: Kpi) {
+    if (nav === "dashboard") setNav("ask"); // drilling in from the dashboard routes to the chat
+    setContext(`${k.label} (${fmt(k)})`);
+  }
+
+  // Clicking a value/slice inside an answer card selects that topic as context.
   function explainTopic(topic: string) {
     if (!topic) return;
-    const prompt =
-      tab === "learn"
-        ? `Tell me more about "${topic}" like I'm new to the revenue cycle — what it means, why it matters, and how we're doing.`
-        : `Dig into "${topic}" — why is it where it is, what's driving it, and what's the highest-impact action? Use the data.`;
-    send(prompt);
+    if (nav === "dashboard") setNav("ask");
+    setContext(topic);
   }
 
-  // The rail follows the Productivity segment; on the Learn tab it always shows everything.
-  const activeSegment: Segment = tab === "pro" ? segment : "all";
-  const front = kpis.filter((k) => k.stage === "front");
-  const rest = kpis.filter((k) => k.stage !== "front");
-  const shownAlerts = activeSegment === "all" ? alerts : alerts.filter((a) => a.stage === activeSegment);
+  // Send the user's typed question, weaving in the selected context if any.
+  function submitWithContext(text: string) {
+    const t = text.trim();
+    if (!t && !context) return;
+    const finalText = context
+      ? t
+        ? `Regarding "${context}": ${t}`
+        : `Tell me about "${context}" — what it is, why it's where it is, and the highest-impact action. Use the data.`
+      : t;
+    setContext(null);
+    send(finalText);
+  }
+
+  const paletteActions: PaletteAction[] = useMemo(
+    () => [
+      { id: "nav-dash", label: "Dashboard", hint: "KPIs, funnel & alerts", section: "Navigate", run: () => setNav("dashboard") },
+      { id: "nav-ask", label: "Ask Cadence", hint: "Chat with the agent", section: "Navigate", run: () => setNav("ask") },
+      { id: "nav-learn", label: "Learn", hint: "Revenue-cycle lessons", section: "Navigate", run: () => setNav("learn") },
+      { id: "q-brief", label: "Get my morning briefing", hint: "Top 3 priorities by revenue impact", section: "Ask Cadence", run: () => askInChat(BRIEFING_PROMPT, { hidden: true }) },
+      { id: "q-triage", label: "Triage the denied-claim worklist", hint: "What to work first today", section: "Ask Cadence", run: () => askInChat("Look at the denied-claim worklist and tell me which claims my team should work first today, and why.") },
+      { id: "q-payer", label: "Which payer is my biggest problem?", section: "Ask Cadence", run: () => askInChat("Which payer is my biggest problem right now? Use the payer scorecard.") },
+      { id: "q-roi", label: "ROI of fixing eligibility", hint: "What-if simulation", section: "Ask Cadence", run: () => askInChat("What would it be worth to raise eligibility auto-verify to its credible ceiling?") },
+    ],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    []
+  );
 
   return (
     <div className="flex h-full">
-      {/* ── Left rail ─────────────────────────────────────────── */}
-      <aside className="hidden w-80 shrink-0 flex-col bg-[var(--color-ink)] text-slate-200 lg:flex">
-        <div className="flex items-center gap-2.5 px-5 py-4">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[var(--color-brand)] text-sm font-bold text-white">C</div>
-          <div>
-            <div className="text-sm font-semibold text-white">Cadence</div>
-            <div className="text-[11px] text-slate-400">Rev Cycle Agent</div>
-          </div>
-        </div>
-
-        <div className="border-t border-white/10 px-5 py-3">
-          <div className="text-xs font-semibold uppercase tracking-wide">
-            <span className="text-[var(--color-brand)]">{orgName.split(" ")[0]}</span>{" "}
-            <span className="text-[var(--color-accent)]">{orgName.split(" ").slice(1).join(" ")}</span>
-          </div>
-          <div className="text-[10px] text-slate-400">in partnership with Optum</div>
-          <div className="text-[11px] font-medium text-amber-300/90">Mock demo data — fictional numbers, not real Allina data</div>
-        </div>
-
-        <div className="flex-1 overflow-y-auto px-5 py-4">
-          <div className="mb-3 text-[10px] text-slate-500">Tap any metric to ask why →</div>
-          {activeSegment === "all" ? (
-            <>
-              <RailSection label="Front-end" accent>
-                {front.map((k) => <KpiRow key={k.id} k={k} onExplain={explainKpi} />)}
-              </RailSection>
-              <RailSection label="Mid & back-end">
-                {rest.map((k) => <KpiRow key={k.id} k={k} onExplain={explainKpi} />)}
-              </RailSection>
-            </>
-          ) : (
-            <RailSection label={activeSegment === "front" ? "Front-end" : "Back-end"} accent={activeSegment === "front"}>
-              {kpis.filter((k) => k.stage === activeSegment).map((k) => <KpiRow key={k.id} k={k} onExplain={explainKpi} />)}
-            </RailSection>
-          )}
-
-          <div className="mt-5">
-            <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-400">Active alerts</div>
-            <ul className="space-y-2">
-              {shownAlerts.length === 0 ? (
-                <li className="px-2.5 text-[11px] text-slate-500">No active alerts in this area.</li>
-              ) : (
-                shownAlerts.map((a) => (
-                  <li key={a.title} className="rounded-lg bg-white/5 p-2.5">
-                    <div className="flex items-center gap-1.5">
-                      <span className={`h-1.5 w-1.5 rounded-full ${a.severity === "high" ? "bg-rose-400" : "bg-amber-400"}`} />
-                      <span className="text-xs font-medium text-slate-100">{a.title}</span>
-                    </div>
-                  </li>
-                ))
-              )}
-            </ul>
-          </div>
-        </div>
-      </aside>
+      <Sidebar nav={nav} setNav={setNav} openPalette={() => setPaletteOpen(true)} />
 
       {/* ── Main ──────────────────────────────────────────────── */}
       <main className="flex min-w-0 flex-1 flex-col">
-        {/* Mode tabs */}
-        <div className="flex items-center justify-between gap-3 border-b border-slate-200 bg-white px-4 py-2.5 sm:px-8">
-          <div className="inline-flex rounded-xl bg-slate-100 p-1">
-            {(Object.keys(TABS) as Mode[]).map((m) => (
-              <button
-                key={m}
-                onClick={() => setTab(m)}
-                className={`rounded-lg px-4 py-1.5 text-sm font-semibold transition ${
-                  tab === m
-                    ? "bg-white text-[var(--color-brand)] shadow-sm"
-                    : "text-slate-500 hover:text-slate-700"
-                }`}
-              >
-                {TABS[m].label}
-              </button>
-            ))}
+        {/* Slim header — page context + provenance */}
+        <header className="flex items-center justify-between gap-3 border-b border-slate-200 bg-white px-4 py-2.5 sm:px-8">
+          <div className="text-sm font-semibold text-slate-900">{PAGE_LABEL[nav]}</div>
+          <div className="flex items-center gap-2">
+            <span className="hidden text-xs text-slate-400 lg:block">{overview?.org.name ?? "Allina Health"} · in partnership with Optum</span>
+            <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700">Mock data</span>
           </div>
-          <span className="hidden text-xs text-slate-400 sm:block">{TABS[tab].tagline}</span>
-        </div>
+        </header>
 
-        {/* Segment selector — scopes the rail, the chips, and the agent to a part of the cycle */}
-        {tab === "pro" && (
-          <div className="flex items-center gap-2 border-b border-slate-200 bg-white px-4 py-2 sm:px-8">
-            <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">View</span>
-            <div className="inline-flex rounded-lg bg-slate-100 p-0.5">
-              {SEGMENTS.map((s) => (
-                <button
-                  key={s.key}
-                  onClick={() => setSegment(s.key)}
-                  className={`rounded-md px-3 py-1 text-xs font-semibold transition ${
-                    segment === s.key ? "bg-white text-[var(--color-brand)] shadow-sm" : "text-slate-500 hover:text-slate-700"
-                  }`}
-                >
-                  {s.label}
-                </button>
-              ))}
-            </div>
+        {nav === "dashboard" ? (
+          <div className="flex-1 overflow-y-auto">
+            <DashboardView
+              overview={overview}
+              onExplainKpi={explainKpi}
+              onExplainTopic={explainTopic}
+              onBriefing={() => askInChat(BRIEFING_PROMPT, { hidden: true })}
+            />
           </div>
-        )}
-
+        ) : (
+        <>
         {!hasKey && (
           <div className="bg-amber-50 px-6 py-2 text-center text-xs text-amber-800">
             No <code>ANTHROPIC_API_KEY</code> found on the server — add it to <code>.env</code> and restart to enable the agent.
           </div>
         )}
 
-        <div ref={threadRef} onScroll={handleThreadScroll} className="flex-1 overflow-y-auto px-4 py-6 sm:px-8">
-          <div className="mx-auto max-w-3xl">
+        <div ref={threadRef} onScroll={handleThreadScroll} className="flex-1 overflow-y-auto px-4 py-5 sm:px-6">
+          <div className={`mx-auto ${started ? "max-w-3xl" : "max-w-6xl"}`}>
             {messages.filter((m) => !m.hidden).length === 0 ? (
-              <Welcome tab={tab} segment={segment} onPick={send} />
+              <Welcome
+                tab={tab}
+                segment={segment}
+                setSegment={setSegment}
+                onPick={send}
+                context={context}
+                onSubmit={submitWithContext}
+                onClearContext={() => setContext(null)}
+              />
             ) : (
               <div className="space-y-6">
-                {messages.map((m, i) => (m.hidden ? null : <Bubble key={i} m={m} onExplain={explainTopic} />))}
+                {messages.map((m, i) =>
+                  m.hidden ? null : (
+                    <Bubble key={i} m={m} busy={busy && i === messages.length - 1} onExplain={explainTopic} onSuggest={(s) => send(s)} />
+                  )
+                )}
                 {working && (
                   <div className="flex items-center gap-2 text-xs text-slate-500">
                     <span className="typing-dot">●</span>
@@ -324,85 +364,529 @@ export default function App() {
           </div>
         </div>
 
+        {started && (
         <div className="border-t border-slate-200 bg-white px-4 py-3 sm:px-8">
-          <form
-            className="mx-auto flex max-w-3xl items-end gap-2"
-            onSubmit={(e) => {
-              e.preventDefault();
-              send(input);
-            }}
-          >
-            <textarea
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  send(input);
-                }
+          <div className="mx-auto max-w-3xl">
+            <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+              <span className="h-1.5 w-1.5 rounded-full bg-[var(--color-brand)]" />
+              Ask Cadence
+            </div>
+            {context && <ContextChip label={context} onClear={() => setContext(null)} />}
+            <form
+              className="flex items-end gap-2"
+              onSubmit={(e) => {
+                e.preventDefault();
+                submitWithContext(input);
               }}
-              rows={1}
-              placeholder="Ask about productivity, denials, prior auth, eligibility…"
-              className="max-h-32 flex-1 resize-none rounded-xl border border-slate-300 px-4 py-2.5 text-sm outline-none focus:border-[var(--color-brand)] focus:ring-2 focus:ring-[var(--color-brand-soft)]"
-            />
-            <button
-              type="submit"
-              disabled={busy || !input.trim()}
-              className="rounded-xl bg-[var(--color-brand)] px-4 py-2.5 text-sm font-semibold text-white transition hover:brightness-95 disabled:opacity-40"
             >
-              {busy ? "…" : "Ask"}
-            </button>
-          </form>
-          <p className="mx-auto mt-1.5 max-w-3xl text-center text-[11px] text-slate-400">
-            Cadence runs on Claude Opus 4.8 over mock revenue-cycle data — every figure here is fabricated for this demo, not real Allina data. Verify before acting on real operations.
-          </p>
+              <textarea
+                id="cadence-composer"
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    submitWithContext(input);
+                  }
+                }}
+                rows={1}
+                placeholder={context ? `Ask your question about "${context}"…` : "Ask about productivity, denials, prior auth, eligibility…"}
+                className="max-h-32 flex-1 resize-none rounded-xl border border-slate-300 px-4 py-2.5 text-sm outline-none focus:border-[var(--color-brand)] focus:ring-2 focus:ring-[var(--color-brand-soft)]"
+              />
+              {busy ? (
+                <button
+                  type="button"
+                  onClick={stop}
+                  title="Stop generating"
+                  className="flex items-center gap-1.5 rounded-xl border border-rose-200 bg-rose-50 px-4 py-2.5 text-sm font-semibold text-rose-600 transition hover:bg-rose-100"
+                >
+                  <span className="flex h-3.5 w-3.5 items-center justify-center">
+                    <span className="h-2.5 w-2.5 rounded-[3px] bg-rose-600" />
+                  </span>
+                  Stop
+                </button>
+              ) : (
+                <button
+                  type="submit"
+                  disabled={!input.trim() && !context}
+                  className="rounded-xl bg-[var(--color-brand)] px-4 py-2.5 text-sm font-semibold text-white transition hover:brightness-95 disabled:opacity-40"
+                >
+                  Ask
+                </button>
+              )}
+            </form>
+            <p className="mt-1.5 text-center text-[11px] text-slate-400">
+              Cadence runs on Claude Fable 5 over mock revenue-cycle data — every figure here is fabricated for this demo, not real Allina data. Verify before acting on real operations.
+            </p>
+          </div>
         </div>
+        )}
+        </>
+        )}
       </main>
+
+      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} actions={paletteActions} onAskFree={(q) => askInChat(q)} />
     </div>
   );
 }
 
-function Welcome({ tab, segment, onPick }: { tab: Mode; segment: Segment; onPick: (t: string, opts?: { hidden?: boolean }) => void }) {
-  const t = TABS[tab];
-  // On Productivity, the featured briefing and chips follow the selected segment.
-  const content = tab === "pro" ? PRO_SEGMENTS[segment] : null;
-  const featured = content?.featured;
-  const suggestions = content ? content.suggestions : t.suggestions;
+// ── Skinny left sidebar ──────────────────────────────────────
+function Sidebar({ nav, setNav, openPalette }: { nav: Nav; setNav: (n: Nav) => void; openPalette: () => void }) {
+  const items: { key: Nav; label: string; icon: React.ReactNode }[] = [
+    {
+      key: "dashboard",
+      label: "Dashboard",
+      icon: (
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-[18px] w-[18px]">
+          <path d="M3 12h4l2-7 4 14 2-7h6" />
+        </svg>
+      ),
+    },
+    {
+      key: "ask",
+      label: "Ask Cadence",
+      icon: (
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-[18px] w-[18px]">
+          <path d="M12 3a7 7 0 0 1 7 7c0 2-1 3-1 5H6c0-2-1-3-1-5a7 7 0 0 1 7-7Z" /><path d="M9 21h6" />
+        </svg>
+      ),
+    },
+    {
+      key: "learn",
+      label: "Learn",
+      icon: (
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-[18px] w-[18px]">
+          <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" /><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2Z" />
+        </svg>
+      ),
+    },
+  ];
   return (
-    <div className="animate-rise pt-6">
-      <h1 className="text-2xl font-semibold text-slate-900">{t.heading}</h1>
-      <p className="mt-2 max-w-xl text-sm text-slate-500">{t.blurb}</p>
+    <aside className="flex w-[196px] shrink-0 flex-col border-r border-slate-200 bg-white px-3 py-4">
+      {/* Brand */}
+      <div className="mb-4 flex items-center gap-2 px-2">
+        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[var(--color-brand)] text-sm font-bold text-white">C</div>
+        <div className="leading-tight">
+          <div className="text-[15px] font-bold tracking-tight text-slate-900">Cadence</div>
+          <div className="text-[9.5px] text-slate-400">Rev Cycle Agent</div>
+        </div>
+      </div>
 
-      {featured && (
+      <nav className="space-y-0.5">
+        {items.map((it) => {
+          const active = nav === it.key;
+          return (
+            <button
+              key={it.key}
+              onClick={() => setNav(it.key)}
+              className={`flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-[13px] font-medium transition ${
+                active ? "bg-[var(--color-brand-soft)] font-semibold text-[var(--color-brand)]" : "text-slate-600 hover:bg-slate-100"
+              }`}
+            >
+              <span className={active ? "text-[var(--color-brand)]" : "text-slate-400"}>{it.icon}</span>
+              {it.label}
+            </button>
+          );
+        })}
+      </nav>
+
+      {/* Command palette hint */}
+      <button
+        onClick={openPalette}
+        className="mt-3 flex items-center gap-2 rounded-lg border border-slate-200 px-2.5 py-2 text-[12px] text-slate-400 transition hover:border-[var(--color-brand)] hover:text-[var(--color-brand)]"
+      >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className="h-3.5 w-3.5">
+          <circle cx="11" cy="11" r="7" /><path d="m21 21-4.3-4.3" />
+        </svg>
+        <span className="flex-1 text-left">Search or ask</span>
+        <kbd className="rounded border border-slate-200 px-1 py-0.5 text-[9.5px] font-semibold">⌘K</kbd>
+      </button>
+
+      <div className="mt-auto flex items-center gap-2 border-t border-slate-100 px-2 pt-3">
+        <div className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-br from-[#0091d6] to-[#0069b0] text-[11px] font-bold text-white">KD</div>
+        <div className="min-w-0 leading-tight">
+          <div className="truncate text-[12px] font-semibold text-slate-800">Kenlee Duong</div>
+          <div className="truncate text-[10px] text-slate-400">Revenue Cycle Intern</div>
+        </div>
+      </div>
+    </aside>
+  );
+}
+
+function Welcome({
+  tab,
+  segment,
+  setSegment,
+  onPick,
+  context,
+  onSubmit,
+  onClearContext,
+}: {
+  tab: Mode;
+  segment: Segment;
+  setSegment: (s: Segment) => void;
+  onPick: (t: string, opts?: { hidden?: boolean }) => void;
+  context: string | null;
+  onSubmit: (text: string) => void;
+  onClearContext: () => void;
+}) {
+  return tab === "learn" ? (
+    <LearnHome onPick={onPick} />
+  ) : (
+    <AskHome segment={segment} setSegment={setSegment} onPick={onPick} context={context} onSubmit={onSubmit} onClearContext={onClearContext} />
+  );
+}
+
+// A small pill showing what the user selected (KPI / chart slice / alert) to ask about.
+function ContextChip({ label, onClear, tone = "light" }: { label: string; onClear: () => void; tone?: "light" | "dark" }) {
+  const dark = tone === "dark";
+  return (
+    <div
+      className={`mb-2 inline-flex max-w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-[12px] ${
+        dark ? "bg-white/15 text-white" : "border border-[var(--color-brand)]/25 bg-[var(--color-brand-soft)] text-[var(--color-brand)]"
+      }`}
+    >
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-3.5 w-3.5 shrink-0">
+        <path d="M20.59 13.41 11 3.82A2 2 0 0 0 9.59 3H4v5.59A2 2 0 0 0 4.59 10l9.59 9.59a2 2 0 0 0 2.82 0l3.59-3.59a2 2 0 0 0 0-2.82Z" /><path d="M7 7h.01" />
+      </svg>
+      <span className="truncate font-semibold">Asking about: {label}</span>
+      <button onClick={onClear} title="Clear selection" className={`shrink-0 rounded p-0.5 ${dark ? "hover:bg-white/20" : "hover:bg-black/5"}`}>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" className="h-3.5 w-3.5">
+          <path d="M18 6 6 18M6 6l12 12" />
+        </svg>
+      </button>
+    </div>
+  );
+}
+
+// ── Ask Cadence entry — gradient hero with an inline composer + suggestion pills ──
+function AskHome({
+  segment,
+  setSegment,
+  onPick,
+  context,
+  onSubmit,
+  onClearContext,
+}: {
+  segment: Segment;
+  setSegment: (s: Segment) => void;
+  onPick: (t: string, opts?: { hidden?: boolean }) => void;
+  context: string | null;
+  onSubmit: (text: string) => void;
+  onClearContext: () => void;
+}) {
+  const t = TABS.pro;
+  const content = PRO_SEGMENTS[segment];
+  const [q, setQ] = useState("");
+  const submit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (q.trim() || context) {
+      onSubmit(q.trim());
+      setQ("");
+    }
+  };
+  return (
+    <div className="animate-rise pt-2">
+      <div
+        className="relative overflow-hidden rounded-2xl p-6 text-white shadow-sm sm:p-7"
+        style={{ background: "linear-gradient(135deg,#063a5e 0%,#0077C8 62%,#0091d6 100%)" }}
+      >
+        <div
+          className="pointer-events-none absolute -right-16 -top-16 h-64 w-64 rounded-full"
+          style={{ background: "radial-gradient(circle, rgba(120,190,67,.34), transparent 65%)" }}
+        />
+        <div className="relative flex items-center justify-between gap-3">
+          <span className="inline-flex items-center gap-1.5 rounded-full border border-white/25 bg-white/15 px-3 py-1 text-[11.5px] font-semibold">
+            <span className="text-[13px] leading-none">✨</span> Ask Cadence
+          </span>
+          {/* Segment scope — tucked into the hero */}
+          <div className="inline-flex rounded-lg border border-white/20 bg-white/10 p-0.5">
+            {SEGMENTS.map((s) => (
+              <button
+                key={s.key}
+                onClick={() => setSegment(s.key)}
+                className={`rounded-md px-2.5 py-1 text-[11.5px] font-semibold transition ${
+                  segment === s.key ? "bg-white text-[var(--color-brand)]" : "text-white/80 hover:text-white"
+                }`}
+              >
+                {s.label}
+              </button>
+            ))}
+          </div>
+        </div>
+        <h1 className="relative mt-3.5 max-w-xl text-[26px] font-bold leading-tight tracking-tight">{t.heading}</h1>
+        <p className="relative mt-1.5 max-w-lg text-[13.5px] text-white/85">{t.blurb}</p>
+
+        {context && (
+          <div className="relative mt-4">
+            <ContextChip label={context} onClear={onClearContext} tone="dark" />
+          </div>
+        )}
+
+        <form onSubmit={submit} className="relative mt-3 flex max-w-2xl items-center gap-2 rounded-xl bg-white p-1.5 pl-4 shadow-lg">
+          <svg viewBox="0 0 24 24" fill="none" stroke="var(--color-brand)" strokeWidth="2" strokeLinecap="round" className="h-[18px] w-[18px] shrink-0">
+            <circle cx="11" cy="11" r="7" /><path d="m21 21-4.3-4.3" />
+          </svg>
+          <input
+            id="cadence-composer"
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder={context ? `Ask your question about "${context}"…` : "e.g. Which payer should my team focus on first?"}
+            className="min-w-0 flex-1 bg-transparent text-[14px] text-slate-900 outline-none placeholder:text-slate-400"
+          />
+          <button
+            type="submit"
+            className="flex shrink-0 items-center gap-1.5 rounded-lg bg-[var(--color-accent)] px-4 py-2.5 text-[13.5px] font-bold text-white transition hover:brightness-95"
+          >
+            Ask
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" className="h-[15px] w-[15px]">
+              <path d="M5 12h14M13 6l6 6-6 6" />
+            </svg>
+          </button>
+        </form>
+
+        <div className="relative z-10 mt-4 flex flex-wrap gap-2">
+          {content.suggestions.map((s) => (
+            <button
+              key={s}
+              onClick={() => onPick(s)}
+              className="rounded-lg border border-white/20 bg-white/12 px-3 py-2 text-[12.5px] font-medium text-white transition hover:bg-white/25"
+            >
+              {s}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {content.featured && (
         <button
-          onClick={() => onPick(featured.prompt, { hidden: true })}
-          className="group mt-6 flex w-full items-center gap-3 rounded-xl bg-[var(--color-brand)] px-4 py-3.5 text-left shadow-sm ring-1 ring-black/5 transition hover:brightness-105"
+          onClick={() => onPick(content.featured.prompt, { hidden: true })}
+          className="group mt-3 flex w-full items-center gap-3 rounded-xl border border-[var(--color-accent)] bg-[var(--color-accent-soft)] px-4 py-3 text-left transition hover:brightness-[.98]"
         >
           <span className="text-xl leading-none">☀️</span>
           <span className="min-w-0 flex-1">
-            <span className="block text-sm font-semibold text-white">{featured.label}</span>
-            <span className="block text-xs text-white/80">{featured.sub}</span>
+            <span className="block text-sm font-semibold text-slate-900">{content.featured.label}</span>
+            <span className="block text-xs text-slate-600">{content.featured.sub}</span>
           </span>
-          <span className="shrink-0 text-white/90 transition group-hover:translate-x-0.5">→</span>
+          <span className="shrink-0 text-slate-500 transition group-hover:translate-x-0.5">→</span>
         </button>
       )}
+    </div>
+  );
+}
 
-      <div className="mt-3 grid gap-2 sm:grid-cols-2">
-        {suggestions.map((s) => (
+// ── Learn entry — rich lesson-card grid ──────────────────────
+const LESSON_ICON = {
+  book: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5">
+      <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z" /><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z" />
+    </svg>
+  ),
+  code: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5">
+      <path d="M4 4h16v12H4z" /><path d="M8 20h8M12 16v4" />
+    </svg>
+  ),
+  money: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5">
+      <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />
+    </svg>
+  ),
+  check: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5">
+      <path d="M9 11l3 3L22 4" /><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
+    </svg>
+  ),
+  shield: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5">
+      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z" />
+    </svg>
+  ),
+  users: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5">
+      <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" />
+    </svg>
+  ),
+  map: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5">
+      <path d="M9 20 3 17V4l6 3 6-3 6 3v13l-6-3-6 3Z" /><path d="M9 7v13M15 4v13" />
+    </svg>
+  ),
+  doc: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5">
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><path d="M14 2v6h6M8 13h8M8 17h5" />
+    </svg>
+  ),
+  clip: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5">
+      <rect x="8" y="2" width="8" height="4" rx="1" /><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2" /><path d="M9 12h6M9 16h4" />
+    </svg>
+  ),
+} as const;
+
+type Lesson = { icon: keyof typeof LESSON_ICON; title: string; desc: string; category: string; prompt: string; featured?: boolean };
+
+const CATEGORY_ORDER = ["Foundations", "Front-end", "Mid-cycle", "Denials", "Metrics"];
+
+const CATALOG: Lesson[] = [
+  // Foundations
+  { icon: "book", title: "What is a denial?", desc: "The lifecycle from claim submission to payment, and where denials interrupt it. Start here.", category: "Foundations", featured: true, prompt: "Walk me through the revenue cycle, front to back — and explain what a denial is and where in the cycle denials happen." },
+  { icon: "map", title: "Walk the revenue cycle", desc: "Front to back: eligibility → registration → coding → claims → denials → A/R.", category: "Foundations", prompt: "Walk me through the revenue cycle, front to back, and show where denials are born." },
+  { icon: "doc", title: "The 835 & 837 files", desc: "The claim (837) and the remittance (835) — the two documents the whole cycle runs on.", category: "Foundations", prompt: "Explain the 837 claim and the 835 remittance — what they are and how they flow through the cycle." },
+  // Front-end
+  { icon: "users", title: "Eligibility & coverage", desc: "Verifying a patient's insurance before service — and why gaps here cause denials.", category: "Front-end", prompt: "Explain eligibility verification — what it is, why it matters, and how we're doing." },
+  { icon: "shield", title: "Prior authorization", desc: "What prior auth is, how the workflow runs, and why it's such a common denial cause.", category: "Front-end", featured: true, prompt: "What is a prior authorization, and why do denials happen?" },
+  { icon: "clip", title: "Registration & patient access", desc: "Getting demographics and insurance right at the front desk — the first line of defense.", category: "Front-end", prompt: "Explain patient registration and access quality, and why registration errors cause downstream denials." },
+  { icon: "money", title: "Point-of-service collections", desc: "Collecting patient responsibility up front — what good looks like and why it matters.", category: "Front-end", prompt: "Explain point-of-service collections — what it is, what a good rate looks like, and how we're doing." },
+  // Mid-cycle
+  { icon: "code", title: "Medical coding basics", desc: "How clinical care becomes billable codes — and where coding denials come from.", category: "Mid-cycle", prompt: "Explain medical coding basics and how coding accuracy drives denials." },
+  { icon: "check", title: "Clean claim rate", desc: "What a clean claim is, what's a good rate, and the levers that actually move it.", category: "Mid-cycle", featured: true, prompt: "Explain clean claim rate — what's good and what moves it?" },
+  { icon: "doc", title: "Charge capture & DNFB", desc: "Making sure every service is billed, and why discharged-not-final-billed matters.", category: "Mid-cycle", prompt: "Explain charge capture and DNFB (discharged not final billed) — what they are and why they matter." },
+  { icon: "clip", title: "Clinical documentation (CDI)", desc: "Why documentation quality changes coding, reimbursement, and denials.", category: "Mid-cycle", prompt: "Explain clinical documentation improvement (CDI) and how it affects reimbursement and denials." },
+  // Denials
+  { icon: "code", title: "Reading a CARC / RARC code", desc: "Decode CO-197, CO-16 and friends — what the payer is telling you, using our real denied claims.", category: "Denials", featured: true, prompt: "What do CARC and RARC denial codes mean? Use real claims from our worklist as examples of CO-197 and CO-50, and how to respond." },
+  { icon: "users", title: "Why denials are 'born' up front", desc: "Most denials start at registration & eligibility — see why, with our own numbers.", category: "Denials", featured: true, prompt: "Why are most denials 'born' on the front end? Use our data to show it." },
+  { icon: "shield", title: "The appeals process", desc: "How to fight a denial — appeals, overturn rate, and recovering written-off dollars.", category: "Denials", prompt: "Explain the denial appeals process — how appeals work, overturn rate, and recovering dollars. Then show me what a real appeal letter looks like for a claim from our worklist." },
+  // Metrics
+  { icon: "money", title: "Days in A/R, explained", desc: "Why this number is the pulse of your operation, how it's calculated, and what “good” looks like.", category: "Metrics", featured: true, prompt: "Explain days in A/R like I'm new to the revenue cycle — how it's calculated, what's a good benchmark, and what moves it." },
+  { icon: "money", title: "Net collection rate", desc: "The share of collectible dollars you actually collect — the bottom-line health metric.", category: "Metrics", prompt: "Explain net collection rate — what it is, what's good, and what moves it." },
+];
+
+function LearnHome({ onPick }: { onPick: (t: string) => void }) {
+  const [libOpen, setLibOpen] = useState(false);
+  const featured = CATALOG.filter((l) => l.featured);
+  return (
+    <div className="animate-rise pt-2">
+      <div className="mb-4 flex items-baseline justify-between">
+        <h1 className="text-lg font-semibold text-slate-900">Learn the revenue cycle</h1>
+        <button onClick={() => setLibOpen(true)} className="text-[12.5px] font-semibold text-[var(--color-brand)] hover:underline">
+          Browse all lessons →
+        </button>
+      </div>
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        {featured.map((l) => (
           <button
-            key={s}
-            onClick={() => onPick(s)}
-            className="rounded-xl border border-slate-200 bg-white px-4 py-3 text-left text-sm text-slate-700 transition hover:border-[var(--color-brand)] hover:shadow-sm"
+            key={l.title}
+            onClick={() => onPick(l.prompt)}
+            className="group flex flex-col rounded-2xl border border-slate-200 bg-white p-5 text-left shadow-sm transition hover:-translate-y-0.5 hover:border-[var(--color-brand)] hover:shadow-md"
           >
-            {s}
+            <span className="mb-3 flex h-10 w-10 items-center justify-center rounded-xl bg-[var(--color-brand-soft)] text-[var(--color-brand)]">
+              {LESSON_ICON[l.icon]}
+            </span>
+            <span className="text-[15px] font-bold text-slate-900">{l.title}</span>
+            <span className="mt-1.5 text-[12.5px] leading-relaxed text-slate-500">{l.desc}</span>
+            <span className="mt-3 flex items-center gap-1.5 text-[11.5px] font-semibold text-[var(--color-brand)]">
+              <span className="h-1.5 w-1.5 rounded-full bg-[var(--color-accent)]" />
+              {l.category}
+            </span>
           </button>
         ))}
+      </div>
+      {libOpen && (
+        <LessonLibrary
+          onClose={() => setLibOpen(false)}
+          onPick={(p) => {
+            setLibOpen(false);
+            onPick(p);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+// Searchable lesson library — opened from "Browse all lessons".
+function LessonLibrary({ onClose, onPick }: { onClose: () => void; onPick: (prompt: string) => void }) {
+  const [q, setQ] = useState("");
+  const query = q.trim().toLowerCase();
+  const filtered = CATALOG.filter(
+    (l) => !query || l.title.toLowerCase().includes(query) || l.desc.toLowerCase().includes(query) || l.category.toLowerCase().includes(query)
+  );
+  const cats = CATEGORY_ORDER.filter((c) => filtered.some((l) => l.category === c));
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-start justify-center bg-slate-900/40 p-4 pt-[8vh]" onClick={onClose}>
+      <div
+        className="flex max-h-[80vh] w-full max-w-lg flex-col overflow-hidden rounded-2xl bg-white shadow-2xl ring-1 ring-black/5"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header + search */}
+        <div className="border-b border-slate-100 p-4">
+          <div className="mb-3 flex items-center justify-between">
+            <h2 className="text-[15px] font-bold text-slate-900">Lesson library</h2>
+            <button onClick={onClose} title="Close" className="rounded-lg p-1 text-slate-400 transition hover:bg-slate-100 hover:text-slate-600">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" className="h-4 w-4">
+                <path d="M18 6 6 18M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+          <div className="flex items-center gap-2 rounded-xl border border-slate-200 px-3 py-2 focus-within:border-[var(--color-brand)] focus-within:ring-2 focus-within:ring-[var(--color-brand-soft)]">
+            <svg viewBox="0 0 24 24" fill="none" stroke="#94a3b8" strokeWidth="2" strokeLinecap="round" className="h-4 w-4 shrink-0">
+              <circle cx="11" cy="11" r="7" /><path d="m21 21-4.3-4.3" />
+            </svg>
+            <input
+              autoFocus
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              placeholder="Search lessons…"
+              className="min-w-0 flex-1 bg-transparent text-sm text-slate-900 outline-none placeholder:text-slate-400"
+            />
+          </div>
+        </div>
+
+        {/* Grouped list */}
+        <div className="min-h-0 flex-1 overflow-y-auto p-2">
+          {cats.length === 0 ? (
+            <div className="px-3 py-10 text-center text-sm text-slate-400">No lessons match “{q}”.</div>
+          ) : (
+            cats.map((cat) => (
+              <div key={cat} className="mb-1">
+                <div className="px-3 pb-1 pt-3 text-[10.5px] font-bold uppercase tracking-wide text-slate-400">{cat}</div>
+                {filtered
+                  .filter((l) => l.category === cat)
+                  .map((l) => (
+                    <button
+                      key={l.title}
+                      onClick={() => onPick(l.prompt)}
+                      className="flex w-full items-start gap-3 rounded-xl px-3 py-2.5 text-left transition hover:bg-slate-50"
+                    >
+                      <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[var(--color-brand-soft)] text-[var(--color-brand)]">
+                        {LESSON_ICON[l.icon]}
+                      </span>
+                      <span className="min-w-0">
+                        <span className="block text-[13.5px] font-semibold text-slate-900">{l.title}</span>
+                        <span className="block truncate text-[11.5px] text-slate-500">{l.desc}</span>
+                      </span>
+                    </button>
+                  ))}
+              </div>
+            ))
+          )}
+        </div>
       </div>
     </div>
   );
 }
 
-function Bubble({ m, onExplain }: { m: ChatMessage; onExplain: (topic: string) => void }) {
+function Bubble({
+  m,
+  busy,
+  onExplain,
+  onSuggest,
+}: {
+  m: ChatMessage;
+  busy: boolean;
+  onExplain: (topic: string) => void;
+  onSuggest: (q: string) => void;
+}) {
   if (m.role === "user") {
     return (
       <div className="flex justify-end">
@@ -410,69 +894,131 @@ function Bubble({ m, onExplain }: { m: ChatMessage; onExplain: (topic: string) =
       </div>
     );
   }
+  // Splice each chart into the prose where the model dropped its [[chart:id]]
+  // marker; any card the model didn't reference falls to the bottom (nothing lost).
+  const cards = m.cards || [];
+  const byId = new Map(cards.filter((c) => c.chartId).map((c) => [c.chartId as string, c]));
+  const used = new Set<string>();
+  const nodes: React.ReactNode[] = [];
+  // Hide the suggest marker (and any half-streamed [[ token) from display.
+  const text = (m.text || "")
+    .replace(/\[\[suggest:[^\]]*\]\]\s*/g, "")
+    .replace(/\[\[[^\]]*$/, "");
+  const re = /\[\[chart:([A-Za-z0-9_]+)\]\]/g;
+  let last = 0;
+  let key = 0;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(text)) !== null) {
+    const seg = text.slice(last, match.index);
+    if (seg.trim()) nodes.push(<Markdown key={key++}>{seg}</Markdown>);
+    const card = byId.get(match[1]);
+    if (card && !used.has(match[1])) {
+      used.add(match[1]);
+      nodes.push(<CardView key={key++} card={card} onExplain={onExplain} />);
+    }
+    last = re.lastIndex;
+  }
+  const tail = text.slice(last);
+  if (tail.trim()) nodes.push(<Markdown key={key++}>{tail}</Markdown>);
+  const leftover = cards.filter((c) => !(c.chartId && used.has(c.chartId)));
+
   return (
     <div className="animate-rise space-y-3">
-      {m.cards && m.cards.length > 0 && (
-        <div className="space-y-3">{m.cards.map((c, i) => <CardView key={i} card={c} onExplain={onExplain} />)}</div>
+      {/* Tool timeline — what the agent did to build this answer */}
+      {(m.tools?.length ?? 0) > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          {m.tools!.map((t, i) => (
+            <span
+              key={i}
+              className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10.5px] font-medium ${
+                t.done
+                  ? "border-slate-200 bg-slate-50 text-slate-400"
+                  : "border-[var(--color-brand)] bg-[var(--color-brand-soft)] text-[var(--color-brand)]"
+              }`}
+            >
+              {t.done ? "✓" : <span className="typing-dot">●</span>}
+              {prettyToolShort(t.name)}
+            </span>
+          ))}
+        </div>
       )}
-      {m.text && <Markdown>{m.text}</Markdown>}
+      {nodes}
+      {leftover.map((c, i) => <CardView key={`lo${i}`} card={c} onExplain={onExplain} />)}
+      {/* AI follow-up chips */}
+      {!busy && (m.suggestions?.length ?? 0) > 0 && (
+        <div className="flex flex-wrap gap-1.5 pt-1">
+          {m.suggestions!.map((s) => (
+            <button
+              key={s}
+              onClick={() => onSuggest(s)}
+              className="rounded-full border border-[var(--color-brand)]/40 bg-[var(--color-brand-soft)] px-3 py-1.5 text-[12px] font-medium text-[var(--color-brand)] transition hover:brightness-105"
+            >
+              {s}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
 
-function RailSection({ label, accent, children }: { label: string; accent?: boolean; children: React.ReactNode }) {
-  return (
-    <div className="mb-4">
-      <div className={`mb-2 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide ${accent ? "text-[var(--color-brand)]" : "text-slate-400"}`}>
-        {accent && <span className="h-1.5 w-1.5 rounded-full bg-[var(--color-brand)]" />}
-        {label}
-      </div>
-      <div className="space-y-1">{children}</div>
-    </div>
-  );
-}
-
-function KpiRow({ k, onExplain }: { k: Kpi; onExplain: (k: Kpi) => void }) {
+function KpiCard({ k, onExplain }: { k: Kpi; onExplain: (k: Kpi) => void }) {
   const good = k.goodDirection === "up" ? k.value >= k.benchmark : k.value <= k.benchmark;
   const arrow = k.trend === "flat" ? "→" : k.trend === "up" ? "▲" : "▼";
+  const dot = k.stage === "front" ? "var(--color-brand)" : k.stage === "mid" ? "var(--color-accent)" : "#00838f";
   return (
     <button
       onClick={() => onExplain(k)}
-      title={`Explain ${k.label}`}
-      className="group flex w-full items-center justify-between rounded-lg px-2 py-1.5 text-left transition hover:bg-white/10"
+      title={`Explain ${k.label} · benchmark ${fmtVal(k.benchmark, k.unit)}`}
+      className="group flex min-w-[112px] shrink-0 flex-col rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-left shadow-sm transition hover:border-[var(--color-brand)]"
     >
-      <span className="flex items-center gap-1 text-xs text-slate-300 transition group-hover:text-white">
+      <span className="flex items-center gap-1 text-[9px] font-medium uppercase tracking-wide text-slate-500">
+        <span className="h-1 w-1 rounded-full" style={{ background: dot }} />
         {k.label}
-        <span className="text-[var(--color-brand)] opacity-0 transition group-hover:opacity-100">?</span>
       </span>
-      <span className="flex items-center gap-1.5">
-        <span className="text-xs font-semibold text-white">{fmt(k)}</span>
-        <span className={`text-[10px] ${good ? "text-[var(--color-accent)]" : "text-rose-400"}`}>{arrow}</span>
+      <span className="mt-0.5 flex items-baseline gap-1">
+        <span className="text-sm font-semibold text-slate-900">{fmt(k)}</span>
+        <span className={`text-[10px] ${good ? "text-[var(--color-accent)]" : "text-rose-500"}`}>{arrow}</span>
+        <span className="text-[9px] text-slate-400">· {fmtVal(k.benchmark, k.unit)}</span>
       </span>
     </button>
   );
 }
 
 function fmt(k: Kpi) {
-  if (k.unit === "$/mo") return `$${Math.round(k.value / 1000)}K`;
-  if (k.unit === "%") return `${k.value}%`;
-  if (k.unit === "days") return `${k.value}d`;
-  if (k.unit === "hrs") return `${k.value}h`;
-  return `${k.value}`;
+  return fmtVal(k.value, k.unit);
 }
 
+function fmtVal(value: number, unit: string) {
+  if (unit === "$/mo") return `$${Math.round(value / 1000)}K`;
+  if (unit === "%") return `${value}%`;
+  if (unit === "days") return `${value}d`;
+  if (unit === "hrs") return `${value}h`;
+  return `${value}`;
+}
+
+const TOOL_LABEL: Record<string, [progress: string, short: string]> = {
+  get_kpi_overview: ["Pulling KPI overview…", "KPI overview"],
+  get_eligibility_stats: ["Checking eligibility performance…", "Eligibility"],
+  get_prior_auth_stats: ["Analyzing prior auth…", "Prior auth"],
+  get_registration_quality: ["Reviewing registration quality…", "Registration"],
+  get_coding_productivity: ["Reviewing coding productivity…", "Coding"],
+  get_denials: ["Breaking down denials…", "Denials"],
+  get_staff_productivity: ["Reviewing team productivity…", "Team"],
+  get_trend: ["Plotting the trend…", "Trend"],
+  get_financial_summary: ["Checking cash & A/R…", "Cash & A/R"],
+  get_alerts: ["Scanning for revenue leaks…", "Alerts"],
+  get_payer_scorecard: ["Scoring the payers…", "Payer scorecard"],
+  get_cycle_funnel: ["Mapping the claim flow…", "Claim funnel"],
+  get_claims_worklist: ["Pulling the denied-claim worklist…", "Worklist"],
+  get_claim_detail: ["Opening the claim…", "Claim detail"],
+  draft_appeal_letter: ["Drafting the appeal…", "Appeal draft"],
+  simulate_improvement: ["Running the what-if…", "ROI simulation"],
+};
+
 function prettyTool(name: string) {
-  const map: Record<string, string> = {
-    get_kpi_overview: "Pulling KPI overview…",
-    get_eligibility_stats: "Checking eligibility performance…",
-    get_prior_auth_stats: "Analyzing prior auth…",
-    get_registration_quality: "Reviewing registration quality…",
-    get_coding_productivity: "Reviewing coding productivity…",
-    get_denials: "Breaking down denials…",
-    get_staff_productivity: "Reviewing team productivity…",
-    get_trend: "Plotting the trend…",
-    get_financial_summary: "Checking cash & A/R…",
-    get_alerts: "Scanning for revenue leaks…",
-  };
-  return map[name] || "Working…";
+  return TOOL_LABEL[name]?.[0] || "Working…";
+}
+function prettyToolShort(name: string) {
+  return TOOL_LABEL[name]?.[1] || name;
 }

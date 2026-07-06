@@ -2,7 +2,7 @@ import {
   Bar, BarChart, CartesianGrid, Cell, Line, LineChart, Pie, PieChart,
   ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from "recharts";
-import type { Card } from "../types";
+import type { Card, Column } from "../types";
 
 const PALETTE = ["#0077c8", "#78be43", "#0b1220", "#00a3b4", "#5b8def", "#2c6e49"];
 const STAGE_DOT: Record<string, string> = { front: "#0077c8", mid: "#78be43", back: "#00838f" };
@@ -34,7 +34,7 @@ function render(card: Card, onExplain?: (topic: string) => void) {
               key={s.label}
               type="button"
               onClick={() => ask(s.label)}
-              title={`Explain ${s.label}`}
+              title={`Ask about ${s.label}`}
               className="rounded-lg bg-slate-50 p-3 text-left transition hover:bg-slate-100 hover:ring-1 hover:ring-[var(--color-brand-soft)]"
             >
               <div className="flex items-center gap-1.5">
@@ -113,7 +113,7 @@ function render(card: Card, onExplain?: (topic: string) => void) {
                 <button
                   type="button"
                   onClick={() => ask(d.name)}
-                  title={`Explain ${d.name}`}
+                  title={`Ask about ${d.name}`}
                   className="flex w-full items-center gap-2 rounded px-1 py-0.5 text-left text-xs text-slate-600 transition hover:bg-slate-50"
                 >
                   <span className="h-2.5 w-2.5 shrink-0 rounded-sm" style={{ background: PALETTE[i % PALETTE.length] }} />
@@ -139,28 +139,13 @@ function render(card: Card, onExplain?: (topic: string) => void) {
               {card.rows.map((row, i) => (
                 <tr
                   key={i}
-                  onClick={() => ask(row.name ?? row[card.columns[0]?.key])}
-                  title="Explain this row"
+                  onClick={() => ask(row.id ?? row.name ?? row[card.columns[0]?.key])}
+                  title="Ask about this row"
                   className="cursor-pointer border-b border-slate-100 transition last:border-0 hover:bg-slate-50"
                 >
-                  {card.columns.map((c) => {
-                    const v = row[c.key];
-                    const isProd = c.key === "productivityPct";
-                    const isQueue = c.key === "queue";
-                    return (
-                      <td key={c.key} className="px-2 py-1.5">
-                        {c.key === "name" ? (
-                          <span className="font-medium text-slate-900">{v}</span>
-                        ) : isProd ? (
-                          <span className={`rounded px-1.5 py-0.5 font-semibold ${v >= 100 ? "bg-emerald-50 text-emerald-700" : v >= 90 ? "bg-amber-50 text-amber-700" : "bg-rose-50 text-rose-700"}`}>{v}%</span>
-                        ) : isQueue ? (
-                          <span className={v > 80 ? "font-semibold text-rose-600" : "text-slate-600"}>{v}</span>
-                        ) : (
-                          <span className="text-slate-600">{c.format === "pct" ? `${v}%` : v}</span>
-                        )}
-                      </td>
-                    );
-                  })}
+                  {card.columns.map((c) => (
+                    <td key={c.key} className="px-2 py-1.5">{formatCell(row[c.key], c)}</td>
+                  ))}
                 </tr>
               ))}
             </tbody>
@@ -176,7 +161,7 @@ function render(card: Card, onExplain?: (topic: string) => void) {
               <button
                 type="button"
                 onClick={() => ask(a.title)}
-                title={`Explain "${a.title}"`}
+                title={`Ask about "${a.title}"`}
                 className="w-full rounded-lg border border-slate-200 p-3 text-left transition hover:bg-slate-50"
               >
                 <div className="flex items-center gap-2">
@@ -189,7 +174,163 @@ function render(card: Card, onExplain?: (topic: string) => void) {
           ))}
         </ul>
       );
+
+    case "funnel": {
+      const max = Math.max(...card.steps.map((s) => s.count), 1);
+      return (
+        <div className="space-y-1.5">
+          {card.steps.map((s, i) => {
+            const pct = Math.max(10, Math.round((s.count / max) * 100));
+            const leak = i === 2; // "denied" is the leak step
+            return (
+              <button
+                key={s.stage}
+                type="button"
+                onClick={() => ask(s.stage)}
+                title={`Ask about ${s.stage}`}
+                className="group flex w-full items-center gap-3 text-left"
+              >
+                <span className="w-40 shrink-0 truncate text-[11.5px] font-medium text-slate-600">{s.stage}</span>
+                <span className="relative h-7 flex-1 overflow-hidden rounded-md bg-slate-100">
+                  <span
+                    className="absolute inset-y-0 left-0 flex items-center rounded-md px-2 text-[11px] font-bold text-white transition-all group-hover:brightness-110"
+                    style={{
+                      width: `${pct}%`,
+                      background: leak
+                        ? "linear-gradient(90deg,#f43f5e,#fb7185)"
+                        : `linear-gradient(90deg,#005a99,${i >= 3 ? "#78be43" : "#0077c8"})`,
+                    }}
+                  >
+                    {s.count.toLocaleString()}
+                  </span>
+                </span>
+                <span className="hidden w-52 shrink-0 truncate text-[10.5px] text-slate-400 sm:block">{s.note}</span>
+              </button>
+            );
+          })}
+        </div>
+      );
+    }
+
+    case "impact": {
+      const span = Math.max(card.ceiling - Math.min(card.current, card.target), 0.0001);
+      const curPct = 0;
+      const tgtPct = Math.round(((card.target - card.current) / span) * 100);
+      return (
+        <div className="space-y-4">
+          <div className="grid grid-cols-3 gap-2">
+            <ImpactStat label="Monthly recovery" value={`$${abbr(card.monthlyDollars)}`} tone="accent" />
+            <ImpactStat label="Annualized" value={`$${abbr(card.annualDollars)}`} tone="brand" />
+            <ImpactStat label="Denials prevented /mo" value={card.denialsPrevented ? card.denialsPrevented.toLocaleString() : "—"} tone="teal" />
+          </div>
+          <div>
+            <div className="mb-1.5 flex justify-between text-[11px] text-slate-500">
+              <span>Now: <b className="text-slate-900">{card.current}{card.unit}</b></span>
+              <span>Target: <b className="text-[var(--color-accent)]">{card.target}{card.unit}</b></span>
+              <span>Credible ceiling: {card.ceiling}{card.unit}</span>
+            </div>
+            <div className="relative h-3 overflow-hidden rounded-full bg-slate-100">
+              <span className="absolute inset-y-0 left-0 rounded-full bg-[var(--color-brand)]" style={{ width: `${Math.max(curPct, 4)}%` }} />
+              <span
+                className="absolute inset-y-0 rounded-full bg-[var(--color-accent)]/70"
+                style={{ left: `${Math.max(curPct, 4)}%`, width: `${Math.min(Math.max(tgtPct, 4), 100)}%` }}
+              />
+            </div>
+          </div>
+          <p className="text-[11px] text-slate-400">Linear estimate off the current book of business — directional, not a promise.</p>
+        </div>
+      );
+    }
+
+    case "claim": {
+      const c = card.claim;
+      const urgent = c.deadlineDays <= 14;
+      return (
+        <div>
+          <div className="grid grid-cols-2 gap-x-4 gap-y-2 sm:grid-cols-3">
+            <ClaimField label="Payer" value={c.payer} />
+            <ClaimField label="Service" value={c.service} />
+            <ClaimField label="Date of service" value={c.dos} />
+            <ClaimField label="Amount" value={`$${c.amount.toLocaleString()}`} strong />
+            <ClaimField label="CARC" value={`${c.carc}`} />
+            <ClaimField label="Appeal deadline" value={`${c.deadlineDays} days`} bad={urgent} />
+            <ClaimField label="Age" value={`${c.ageDays} days`} />
+            <ClaimField label="Status" value={c.status.replace("_", " ")} />
+            <ClaimField label="Assigned to" value={c.assignedTo} />
+          </div>
+          <div className="mt-3 rounded-lg bg-slate-50 p-3">
+            <div className="text-[10.5px] font-semibold uppercase tracking-wide text-slate-400">Denial reason</div>
+            <div className="mt-0.5 text-xs text-slate-900">{c.reason}{c.carcMeaning ? ` — ${c.carcMeaning}` : ""}</div>
+            <div className="mt-2 text-[10.5px] font-semibold uppercase tracking-wide text-slate-400">Root cause</div>
+            <div className="mt-0.5 text-xs font-medium" style={{ color: STAGE_DOT[c.stage] }}>{c.rootCause}</div>
+          </div>
+        </div>
+      );
+    }
+
+    case "letter": {
+      const c = card.claim;
+      return (
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-slate-600">
+          <span className="rounded-md bg-[var(--color-brand-soft)] px-2 py-1 font-semibold text-[var(--color-brand)]">✍️ Drafting appeal</span>
+          <span><b className="text-slate-900">{c.id}</b> · {c.payer}</span>
+          <span>{c.service} · DOS {c.dos}</span>
+          <span>${c.amount.toLocaleString()} · {c.carc}</span>
+          <span className={c.deadlineDays <= 14 ? "font-semibold text-rose-600" : ""}>{c.deadlineDays} days to file</span>
+        </div>
+      );
+    }
   }
+}
+
+function ImpactStat({ label, value, tone }: { label: string; value: string; tone: "accent" | "brand" | "teal" }) {
+  const map = { accent: "#4d8b27", brand: "var(--color-brand)", teal: "#00838f" } as const;
+  const soft = { accent: "var(--color-accent-soft)", brand: "var(--color-brand-soft)", teal: "#e0f2f4" } as const;
+  return (
+    <div className="rounded-lg p-3" style={{ background: soft[tone] }}>
+      <div className="text-[10.5px] font-semibold uppercase tracking-wide text-slate-500">{label}</div>
+      <div className="mt-0.5 text-xl font-bold tracking-tight" style={{ color: map[tone] }}>{value}</div>
+    </div>
+  );
+}
+
+function ClaimField({ label, value, strong, bad }: { label: string; value: string; strong?: boolean; bad?: boolean }) {
+  return (
+    <div>
+      <div className="text-[10.5px] font-semibold uppercase tracking-wide text-slate-400">{label}</div>
+      <div className={`mt-0.5 text-[13px] ${bad ? "font-semibold text-rose-600" : strong ? "font-semibold text-slate-900" : "text-slate-900"}`}>{value}</div>
+    </div>
+  );
+}
+
+function formatCell(v: any, c: Column) {
+  if (v === undefined || v === null) return <span className="text-slate-400">—</span>;
+  switch (c.format) {
+    case "pct":
+      return <span className="text-slate-600">{v}%</span>;
+    case "prod":
+      return (
+        <span className={`rounded px-1.5 py-0.5 font-semibold ${v >= 100 ? "bg-emerald-50 text-emerald-700" : v >= 90 ? "bg-amber-50 text-amber-700" : "bg-rose-50 text-rose-700"}`}>{v}%</span>
+      );
+    case "queue":
+      return <span className={v > 80 ? "font-semibold text-rose-600" : "text-slate-600"}>{v}</span>;
+    case "money":
+      return <span className="font-semibold text-slate-900">${Number(v).toLocaleString()}</span>;
+    case "deadline":
+      return <span className={`rounded px-1.5 py-0.5 font-semibold ${v <= 14 ? "bg-rose-50 text-rose-700" : v <= 45 ? "bg-amber-50 text-amber-700" : "bg-slate-100 text-slate-600"}`}>{v}d</span>;
+    case "heat_low": // lower is better
+    case "heat_high": // higher is better
+      return <span className="font-medium text-slate-900">{v}</span>;
+    default:
+      if (c.key === "name" || c.key === "id" || c.key === "payer") return <span className="font-medium text-slate-900">{v}</span>;
+      return <span className="text-slate-600">{v}</span>;
+  }
+}
+
+function abbr(v: number) {
+  if (v >= 1e6) return `${(v / 1e6).toFixed(2)}M`;
+  if (v >= 1e3) return `${Math.round(v / 1e3)}K`;
+  return `${v}`;
 }
 
 function TrendArrow({ trend, good }: { trend: "up" | "down" | "flat"; good?: boolean }) {
