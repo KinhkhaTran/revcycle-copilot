@@ -416,7 +416,7 @@ export default function App() {
               )}
             </form>
             <p className="mt-1.5 text-center text-[11px] text-slate-400">
-              Cadence runs on Claude Fable 5 over mock revenue-cycle data — every figure here is fabricated for this demo, not real Allina data. Verify before acting on real operations.
+              Cadence runs on Claude over mock revenue-cycle data — every figure here is fabricated for this demo, not real Allina data. Verify before acting on real operations.
             </p>
           </div>
         </div>
