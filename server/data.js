@@ -201,22 +201,23 @@ export const FUNNEL = [
 ];
 
 // ── DENIED-CLAIM WORKLIST ────────────────────────────────────────────────────
-// A working queue of individual denied claims (synthetic — initials only, no PHI).
-// This is what the agent drills into and drafts appeals from.
+// A working queue of individual denied claims (synthetic — patient initials and
+// staff employee IDs only, no PHI or PII).
+// This is what the agent drills into when triaging denials.
 
 export const CLAIMS = [
-  { id: "CLM-20461", patient: "J.R.", dos: "2026-06-03", payer: "Cigna", service: "MRI lumbar spine", amount: 2840, carc: "CO-197", reason: "Precertification/authorization absent", rootCause: "Prior auth not obtained before service", stage: "front", ageDays: 19, deadlineDays: 71, status: "new", assignedTo: "Aisha Khan" },
-  { id: "CLM-20488", patient: "M.T.", dos: "2026-06-05", payer: "UnitedHealthcare", service: "Office visit, level 4", amount: 310, carc: "CO-27", reason: "Expenses incurred after coverage terminated", rootCause: "Eligibility not re-verified — coverage termed 5/31", stage: "front", ageDays: 17, deadlineDays: 163, status: "new", assignedTo: "Luis Mendez" },
-  { id: "CLM-20512", patient: "D.W.", dos: "2026-06-06", payer: "Medicaid MCO", service: "Physical therapy, 8 visits", amount: 1460, carc: "CO-197", reason: "Precertification/authorization absent", rootCause: "PA expired after visit 6 — not renewed", stage: "front", ageDays: 16, deadlineDays: 44, status: "in_progress", assignedTo: "Aisha Khan" },
-  { id: "CLM-20535", patient: "S.K.", dos: "2026-06-08", payer: "Aetna", service: "Specialty infusion (biologic)", amount: 9120, carc: "CO-50", reason: "Non-covered: not deemed medically necessary", rootCause: "Documentation didn't support step-therapy failure", stage: "mid", ageDays: 14, deadlineDays: 166, status: "new", assignedTo: "Owen Park" },
-  { id: "CLM-20549", patient: "A.B.", dos: "2026-06-09", payer: "BCBS", service: "Sleep study, in-lab", amount: 2150, carc: "CO-197", reason: "Precertification/authorization absent", rootCause: "Auth obtained for home study, in-lab performed", stage: "front", ageDays: 13, deadlineDays: 77, status: "new", assignedTo: "Luis Mendez" },
-  { id: "CLM-20578", patient: "R.G.", dos: "2026-06-10", payer: "Cigna", service: "Outpatient knee arthroscopy", amount: 6480, carc: "CO-16", reason: "Claim lacks information (missing modifier)", rootCause: "Missing laterality modifier at coding", stage: "mid", ageDays: 12, deadlineDays: 78, status: "in_progress", assignedTo: "Owen Park" },
-  { id: "CLM-20591", patient: "L.N.", dos: "2026-06-11", payer: "UnitedHealthcare", service: "CT abdomen w/ contrast", amount: 1890, carc: "CO-22", reason: "Care may be covered by another payer (COB)", rootCause: "Secondary coverage not captured at registration", stage: "front", ageDays: 11, deadlineDays: 169, status: "new", assignedTo: "Luis Mendez" },
-  { id: "CLM-20604", patient: "P.H.", dos: "2026-06-12", payer: "Medicare Advantage", service: "Echocardiogram", amount: 720, carc: "CO-109", reason: "Claim not covered by this payer/contractor", rootCause: "Wrong plan selected — member switched MA plans in May", stage: "front", ageDays: 10, deadlineDays: 50, status: "new", assignedTo: "Aisha Khan" },
-  { id: "CLM-20633", patient: "C.V.", dos: "2026-06-13", payer: "Aetna", service: "Office visit + labs", amount: 540, carc: "CO-140", reason: "Patient/insured member ID mismatch", rootCause: "Transposed member ID digits at registration", stage: "front", ageDays: 9, deadlineDays: 171, status: "new", assignedTo: "Luis Mendez" },
-  { id: "CLM-20657", patient: "T.S.", dos: "2026-06-16", payer: "BCBS", service: "Occupational therapy eval", amount: 380, carc: "CO-29", reason: "Time limit for filing has expired", rootCause: "Claim held 94 days in coding backlog before submission", stage: "back", ageDays: 6, deadlineDays: 15, status: "new", assignedTo: "Owen Park" },
-  { id: "CLM-20672", patient: "K.M.", dos: "2026-06-17", payer: "Cigna", service: "PET scan, oncology staging", amount: 4980, carc: "CO-50", reason: "Non-covered: not deemed medically necessary", rootCause: "Clinical notes missing prior conventional imaging", stage: "mid", ageDays: 5, deadlineDays: 85, status: "new", assignedTo: "Aisha Khan" },
-  { id: "CLM-20694", patient: "E.D.", dos: "2026-06-19", payer: "Medicaid MCO", service: "Behavioral health, 4 sessions", amount: 620, carc: "CO-18", reason: "Duplicate claim/service", rootCause: "Resubmitted while original still in process", stage: "back", ageDays: 3, deadlineDays: 57, status: "in_progress", assignedTo: "Owen Park" },
+  { id: "CLM-20461", patient: "J.R.", dos: "2026-06-03", payer: "Cigna", service: "MRI lumbar spine", amount: 2840, carc: "CO-197", reason: "Precertification/authorization absent", rootCause: "Prior auth not obtained before service", stage: "front", ageDays: 19, deadlineDays: 71, status: "new", assignedTo: "Employee #10538" },
+  { id: "CLM-20488", patient: "M.T.", dos: "2026-06-05", payer: "UnitedHealthcare", service: "Office visit, level 4", amount: 310, carc: "CO-27", reason: "Expenses incurred after coverage terminated", rootCause: "Eligibility not re-verified — coverage termed 5/31", stage: "front", ageDays: 17, deadlineDays: 163, status: "new", assignedTo: "Employee #10512" },
+  { id: "CLM-20512", patient: "D.W.", dos: "2026-06-06", payer: "Medicaid MCO", service: "Physical therapy, 8 visits", amount: 1460, carc: "CO-197", reason: "Precertification/authorization absent", rootCause: "PA expired after visit 6 — not renewed", stage: "front", ageDays: 16, deadlineDays: 44, status: "in_progress", assignedTo: "Employee #10538" },
+  { id: "CLM-20535", patient: "S.K.", dos: "2026-06-08", payer: "Aetna", service: "Specialty infusion (biologic)", amount: 9120, carc: "CO-50", reason: "Non-covered: not deemed medically necessary", rootCause: "Documentation didn't support step-therapy failure", stage: "mid", ageDays: 14, deadlineDays: 166, status: "new", assignedTo: "Employee #10576" },
+  { id: "CLM-20549", patient: "A.B.", dos: "2026-06-09", payer: "BCBS", service: "Sleep study, in-lab", amount: 2150, carc: "CO-197", reason: "Precertification/authorization absent", rootCause: "Auth obtained for home study, in-lab performed", stage: "front", ageDays: 13, deadlineDays: 77, status: "new", assignedTo: "Employee #10512" },
+  { id: "CLM-20578", patient: "R.G.", dos: "2026-06-10", payer: "Cigna", service: "Outpatient knee arthroscopy", amount: 6480, carc: "CO-16", reason: "Claim lacks information (missing modifier)", rootCause: "Missing laterality modifier at coding", stage: "mid", ageDays: 12, deadlineDays: 78, status: "in_progress", assignedTo: "Employee #10576" },
+  { id: "CLM-20591", patient: "L.N.", dos: "2026-06-11", payer: "UnitedHealthcare", service: "CT abdomen w/ contrast", amount: 1890, carc: "CO-22", reason: "Care may be covered by another payer (COB)", rootCause: "Secondary coverage not captured at registration", stage: "front", ageDays: 11, deadlineDays: 169, status: "new", assignedTo: "Employee #10512" },
+  { id: "CLM-20604", patient: "P.H.", dos: "2026-06-12", payer: "Medicare Advantage", service: "Echocardiogram", amount: 720, carc: "CO-109", reason: "Claim not covered by this payer/contractor", rootCause: "Wrong plan selected — member switched MA plans in May", stage: "front", ageDays: 10, deadlineDays: 50, status: "new", assignedTo: "Employee #10538" },
+  { id: "CLM-20633", patient: "C.V.", dos: "2026-06-13", payer: "Aetna", service: "Office visit + labs", amount: 540, carc: "CO-140", reason: "Patient/insured member ID mismatch", rootCause: "Transposed member ID digits at registration", stage: "front", ageDays: 9, deadlineDays: 171, status: "new", assignedTo: "Employee #10512" },
+  { id: "CLM-20657", patient: "T.S.", dos: "2026-06-16", payer: "BCBS", service: "Occupational therapy eval", amount: 380, carc: "CO-29", reason: "Time limit for filing has expired", rootCause: "Claim held 94 days in coding backlog before submission", stage: "back", ageDays: 6, deadlineDays: 15, status: "new", assignedTo: "Employee #10576" },
+  { id: "CLM-20672", patient: "K.M.", dos: "2026-06-17", payer: "Cigna", service: "PET scan, oncology staging", amount: 4980, carc: "CO-50", reason: "Non-covered: not deemed medically necessary", rootCause: "Clinical notes missing prior conventional imaging", stage: "mid", ageDays: 5, deadlineDays: 85, status: "new", assignedTo: "Employee #10538" },
+  { id: "CLM-20694", patient: "E.D.", dos: "2026-06-19", payer: "Medicaid MCO", service: "Behavioral health, 4 sessions", amount: 620, carc: "CO-18", reason: "Duplicate claim/service", rootCause: "Resubmitted while original still in process", stage: "back", ageDays: 3, deadlineDays: 57, status: "in_progress", assignedTo: "Employee #10576" },
 ];
 
 // ── WHAT-IF LEVERS ───────────────────────────────────────────────────────────
@@ -260,16 +261,16 @@ export const LEVERS = {
 // The manager's team. Productivity is the core "how is my team doing" question.
 
 export const STAFF = [
-  { name: "Maria Alvarez", team: "Eligibility & Auth", role: "Eligibility Specialist", productivityPct: 112, throughputPerDay: 168, target: 150, queue: 22, accuracyPct: 97.1, stage: "front" },
-  { name: "Darnell Brooks", team: "Eligibility & Auth", role: "Prior Auth Coordinator", productivityPct: 104, throughputPerDay: 58, target: 56, queue: 41, accuracyPct: 95.8, stage: "front" },
-  { name: "Priya Nair", team: "Eligibility & Auth", role: "Prior Auth Coordinator", productivityPct: 88, throughputPerDay: 49, target: 56, queue: 73, accuracyPct: 96.4, stage: "front" },
-  { name: "Tony Russo", team: "Patient Access", role: "Registration Rep", productivityPct: 96, throughputPerDay: 240, target: 250, queue: 0, accuracyPct: 92.6, stage: "front" },
-  { name: "Grace Liu", team: "Patient Access", role: "Registration Rep", productivityPct: 119, throughputPerDay: 298, target: 250, queue: 0, accuracyPct: 95.9, stage: "front" },
-  { name: "Sam Okafor", team: "Coding", role: "Inpatient Coder", productivityPct: 91, throughputPerDay: 26, target: 28, queue: 88, accuracyPct: 96.2, stage: "mid" },
-  { name: "Beth Carter", team: "Coding", role: "Outpatient Coder", productivityPct: 103, throughputPerDay: 33, target: 32, queue: 35, accuracyPct: 95.1, stage: "mid" },
-  { name: "Luis Mendez", team: "Denials & Appeals", role: "Denials Analyst", productivityPct: 107, throughputPerDay: 47, target: 44, queue: 51, accuracyPct: 94.4, stage: "back" },
-  { name: "Aisha Khan", team: "Denials & Appeals", role: "Appeals Specialist", productivityPct: 84, throughputPerDay: 18, target: 22, queue: 96, accuracyPct: 93.7, stage: "back" },
-  { name: "Owen Park", team: "Denials & Appeals", role: "Denials Analyst", productivityPct: 98, throughputPerDay: 43, target: 44, queue: 60, accuracyPct: 95.0, stage: "back" },
+  { name: "Employee #10234", team: "Eligibility & Auth", role: "Eligibility Specialist", productivityPct: 112, throughputPerDay: 168, target: 150, queue: 22, accuracyPct: 97.1, stage: "front" },
+  { name: "Employee #10287", team: "Eligibility & Auth", role: "Prior Auth Coordinator", productivityPct: 104, throughputPerDay: 58, target: 56, queue: 41, accuracyPct: 95.8, stage: "front" },
+  { name: "Employee #10312", team: "Eligibility & Auth", role: "Prior Auth Coordinator", productivityPct: 88, throughputPerDay: 49, target: 56, queue: 73, accuracyPct: 96.4, stage: "front" },
+  { name: "Employee #10358", team: "Patient Access", role: "Registration Rep", productivityPct: 96, throughputPerDay: 240, target: 250, queue: 0, accuracyPct: 92.6, stage: "front" },
+  { name: "Employee #10391", team: "Patient Access", role: "Registration Rep", productivityPct: 119, throughputPerDay: 298, target: 250, queue: 0, accuracyPct: 95.9, stage: "front" },
+  { name: "Employee #10425", team: "Coding", role: "Inpatient Coder", productivityPct: 91, throughputPerDay: 26, target: 28, queue: 88, accuracyPct: 96.2, stage: "mid" },
+  { name: "Employee #10467", team: "Coding", role: "Outpatient Coder", productivityPct: 103, throughputPerDay: 33, target: 32, queue: 35, accuracyPct: 95.1, stage: "mid" },
+  { name: "Employee #10512", team: "Denials & Appeals", role: "Denials Analyst", productivityPct: 107, throughputPerDay: 47, target: 44, queue: 51, accuracyPct: 94.4, stage: "back" },
+  { name: "Employee #10538", team: "Denials & Appeals", role: "Appeals Specialist", productivityPct: 84, throughputPerDay: 18, target: 22, queue: 96, accuracyPct: 93.7, stage: "back" },
+  { name: "Employee #10576", team: "Denials & Appeals", role: "Denials Analyst", productivityPct: 98, throughputPerDay: 43, target: 44, queue: 60, accuracyPct: 95.0, stage: "back" },
 ];
 
 export const TEAMS = ["Eligibility & Auth", "Patient Access", "Coding", "Denials & Appeals"];
@@ -301,7 +302,7 @@ export const ALERTS = [
     severity: "medium",
     title: "Appeals queue backing up",
     detail:
-      "Aisha Khan's appeals queue is at 96 with productivity at 84%. Overturn rate is 47% — unworked appeals are leaving recoverable dollars on the table.",
+      "Employee #10538's appeals queue is at 96 with productivity at 84%. Overturn rate is 47% — unworked appeals are leaving recoverable dollars on the table.",
     stage: "back",
   },
 ];
