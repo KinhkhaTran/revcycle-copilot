@@ -10,7 +10,6 @@ export type Card = (
   | { type: "funnel"; title: string; subtitle?: string; steps: FunnelStep[] }
   | { type: "impact"; title: string; subtitle?: string; current: number; target: number; ceiling: number; unit: string; monthlyDollars: number; annualDollars: number; denialsPrevented: number }
   | { type: "claim"; title: string; claim: Claim & { carcMeaning?: string } }
-  | { type: "letter"; title: string; claim: { id: string; payer: string; amount: number; carc: string; service: string; dos: string; deadlineDays: number } }
 ) & {
   /** Stable id the model references with a [[chart:id]] marker to place this card inline. */
   chartId?: string;

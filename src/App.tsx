@@ -8,8 +8,8 @@ import type { ChatMessage, Kpi, Overview } from "./types";
 
 // Sidebar navigation. "dashboard" is the Cycle-by-Stage flow rail; "ask" and
 // "learn" are the two chat modes (pro / learn) surfaced as their own pages.
-type Nav = "dashboard" | "ask" | "learn";
-const PAGE_LABEL: Record<Nav, string> = { dashboard: "Dashboard", ask: "Ask Cadence", learn: "Learn" };
+type Nav = "dashboard" | "ask" | "learn" | "guide";
+const PAGE_LABEL: Record<Nav, string> = { dashboard: "Dashboard", ask: "Ask Cadence", learn: "Learn", guide: "Guide" };
 
 // Seeds the morning briefing. Phrased to lean on get_alerts + get_kpi_overview
 // and to render well through the markdown component (headline → list → lever).
@@ -88,7 +88,7 @@ const TABS: Record<Mode, {
     tagline: "Department-wide — measure & act",
     heading: "Manage your revenue cycle by asking.",
     blurb:
-      "Cadence pulls live numbers, traces every denial to its upstream root cause, simulates what fixes are worth in dollars, and drafts the appeal — then tells you what to do next.",
+      "Cadence pulls live numbers, traces every denial to its upstream root cause, and simulates what fixes are worth in dollars — then tells you what to do next.",
     featured: {
       label: "Get my morning briefing",
       sub: "Your top 3 priorities by revenue impact, triaged",
@@ -358,6 +358,7 @@ export default function App() {
       { id: "nav-dash", label: "Dashboard", hint: "KPIs, funnel & alerts", section: "Navigate", run: () => setNav("dashboard") },
       { id: "nav-ask", label: "Ask Cadence", hint: "Chat with the agent", section: "Navigate", run: () => setNav("ask") },
       { id: "nav-learn", label: "Learn", hint: "Revenue-cycle lessons", section: "Navigate", run: () => setNav("learn") },
+      { id: "nav-guide", label: "Guide", hint: "What Cadence is & how to use it", section: "Navigate", run: () => setNav("guide") },
       { id: "q-brief", label: "Get my morning briefing", hint: "Top 3 priorities by revenue impact", section: "Ask Cadence", run: () => askInChat(BRIEFING_PROMPT, { hidden: true }) },
       { id: "q-triage", label: "Triage the denied-claim worklist", hint: "What to work first today", section: "Ask Cadence", run: () => askInChat("Look at the denied-claim worklist and tell me which claims my team should work first today, and why.") },
       { id: "q-payer", label: "Which payer is my biggest problem?", section: "Ask Cadence", run: () => askInChat("Which payer is my biggest problem right now? Use the payer scorecard.") },
@@ -414,6 +415,10 @@ export default function App() {
               onExplainTopic={explainTopic}
               onBriefing={() => askInChat(BRIEFING_PROMPT, { hidden: true })}
             />
+          </div>
+        ) : nav === "guide" ? (
+          <div className="flex-1 overflow-y-auto">
+            <GuideView onTry={(q) => askInChat(q)} onNav={setNav} />
           </div>
         ) : (
         <>
@@ -549,6 +554,15 @@ function Sidebar({ nav, setNav, openPalette }: { nav: Nav; setNav: (n: Nav) => v
         </svg>
       ),
     },
+    {
+      key: "guide",
+      label: "Guide",
+      icon: (
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-[18px] w-[18px]">
+          <circle cx="12" cy="12" r="10" /><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76" />
+        </svg>
+      ),
+    },
   ];
   return (
     <aside className="flex w-[196px] shrink-0 flex-col border-r border-slate-200 bg-white px-3 py-4">
@@ -599,6 +613,154 @@ function Sidebar({ nav, setNav, openPalette }: { nav: Nav; setNav: (n: Nav) => v
         </div>
       </div>
     </aside>
+  );
+}
+
+// ── Guide — what Cadence is, what it does, and how to use it ─────────────────
+const GUIDE_FEATURES = [
+  {
+    title: "Live KPI dashboard",
+    desc: "Twelve revenue-cycle KPIs against industry benchmarks — clean claim rate, denials, days in A/R, DNFB and more — plus the cycle funnel, active alerts, and a payer scorecard.",
+  },
+  {
+    title: "Ask anything, get sourced answers",
+    desc: "Cadence is an AI agent with 15 data tools. Ask a question and it pulls the actual numbers — eligibility, prior auth, coding, denials, staffing, financials — and answers with charts spliced into the response.",
+  },
+  {
+    title: "Root-cause tracing",
+    desc: "Denials rarely start in the back office. Cadence traces each denial category to its upstream cause — a registration error, a missed auth, an eligibility gap — so fixes land where the problem starts.",
+  },
+  {
+    title: "What-if simulation",
+    desc: "Ask what it's worth to fix a metric (\"raise eligibility auto-verify to its ceiling\") and Cadence simulates the dollar impact, so improvement work can be ranked by ROI.",
+  },
+  {
+    title: "Worklist triage",
+    desc: "Ask which denied claims to work first and Cadence ranks the live worklist by dollars and appeal-deadline risk, down to the individual claim's denial code and root cause.",
+  },
+  {
+    title: "Morning briefing",
+    desc: "One click delivers the day's top three priorities ranked by revenue impact, each tied to its root cause and the single biggest lever to pull.",
+  },
+] as const;
+
+const GUIDE_STEPS: { title: string; desc: string; nav?: Nav; navLabel?: string }[] = [
+  {
+    title: "Start on the Dashboard",
+    desc: "Scan KPIs, alerts, and the funnel. Anything that looks off — click it. The number becomes context for your next question, so you can ask \"why is this red?\" without retyping anything.",
+    nav: "dashboard",
+    navLabel: "Open Dashboard",
+  },
+  {
+    title: "Drill in with Ask Cadence",
+    desc: "Type a question in plain English, or pick a suggestion. Use the front-end / back-end views to focus on patient access or denials & A/R. Follow-up chips keep the thread going.",
+    nav: "ask",
+    navLabel: "Open Ask Cadence",
+  },
+  {
+    title: "Press ⌘K from anywhere",
+    desc: "The command palette navigates, runs the morning briefing, or fires a free-form question without leaving the page you're on.",
+  },
+  {
+    title: "Onboard staff with Learn",
+    desc: "A lesson library that teaches the revenue cycle conversationally — new team members pick a card and ask follow-ups until it clicks.",
+    nav: "learn",
+    navLabel: "Open Learn",
+  },
+];
+
+const GUIDE_QUESTIONS = [
+  "Give me my morning briefing.",
+  "Which payer is my biggest problem right now?",
+  "Why are our denials up, and where do they start?",
+  "What would it be worth to raise eligibility auto-verify to its credible ceiling?",
+  "Which claims should my team work first today?",
+] as const;
+
+function GuideView({ onTry, onNav }: { onTry: (prompt: string) => void; onNav: (n: Nav) => void }) {
+  return (
+    <div className="mx-auto max-w-4xl space-y-8 px-4 py-8 sm:px-6">
+      {/* What it is */}
+      <section className="rounded-2xl bg-gradient-to-br from-[var(--color-brand)] to-[#0069b0] px-6 py-7 text-white sm:px-8">
+        <div className="text-[11px] font-semibold uppercase tracking-wide text-white/70">What is Cadence?</div>
+        <h1 className="mt-1.5 text-xl font-bold sm:text-2xl">An AI agent for revenue-cycle operations.</h1>
+        <p className="mt-2.5 max-w-2xl text-[13.5px] leading-relaxed text-white/85">
+          Cadence sits on top of revenue-cycle data and answers operational questions the way an analyst would:
+          it pulls the live numbers, traces problems to their upstream root cause, and puts a dollar figure on
+          what fixing them is worth — then tells you what to do next. Instead of waiting on a report, you ask.
+        </p>
+      </section>
+
+      {/* What it does */}
+      <section>
+        <h2 className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">What it does</h2>
+        <div className="mt-3 grid gap-3 sm:grid-cols-2">
+          {GUIDE_FEATURES.map((f) => (
+            <div key={f.title} className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+              <div className="text-[13.5px] font-semibold text-slate-900">{f.title}</div>
+              <p className="mt-1 text-[12.5px] leading-relaxed text-slate-600">{f.desc}</p>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {/* How to use it */}
+      <section>
+        <h2 className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">How to use it</h2>
+        <div className="mt-3 space-y-2.5">
+          {GUIDE_STEPS.map((s, i) => (
+            <div key={s.title} className="flex items-start gap-3.5 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+              <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[var(--color-brand-soft)] text-[12px] font-bold text-[var(--color-brand)]">
+                {i + 1}
+              </div>
+              <div className="min-w-0">
+                <div className="text-[13.5px] font-semibold text-slate-900">{s.title}</div>
+                <p className="mt-0.5 text-[12.5px] leading-relaxed text-slate-600">{s.desc}</p>
+                {s.nav && (
+                  <button
+                    onClick={() => onNav(s.nav!)}
+                    className="mt-2 text-[12px] font-semibold text-[var(--color-brand)] hover:underline"
+                  >
+                    {s.navLabel} →
+                  </button>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {/* Questions to try */}
+      <section>
+        <h2 className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">Questions to try</h2>
+        <div className="mt-3 flex flex-wrap gap-2">
+          {GUIDE_QUESTIONS.map((q) => (
+            <button
+              key={q}
+              onClick={() => onTry(q)}
+              className="rounded-full border border-[var(--color-brand)]/40 bg-[var(--color-brand-soft)] px-3.5 py-2 text-left text-[12.5px] font-medium text-[var(--color-brand)] transition hover:brightness-105"
+            >
+              {q}
+            </button>
+          ))}
+        </div>
+      </section>
+
+      {/* Under the hood */}
+      <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+        <h2 className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">Under the hood</h2>
+        <p className="mt-1.5 text-[12.5px] leading-relaxed text-slate-600">
+          Cadence runs on Claude with 15 purpose-built data tools covering eligibility, prior authorization,
+          registration quality, coding, denials, staffing, trends, financials, and payer performance. When you ask a
+          question, the agent decides which tools to call, reads the results, and composes the answer — the tool
+          chips above each response show exactly what it looked at.
+        </p>
+        <p className="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-[12px] leading-relaxed text-amber-800">
+          <strong>Demo note:</strong> every figure in this app is mock data fabricated for demonstration — not real
+          Allina data. Verify against production systems before acting on real operations.
+        </p>
+      </section>
+    </div>
   );
 }
 
@@ -835,7 +997,7 @@ const CATALOG: Lesson[] = [
   // Denials
   { icon: "code", title: "Reading a CARC / RARC code", desc: "Decode CO-197, CO-16 and friends — what the payer is telling you, using our real denied claims.", category: "Denials", featured: true, prompt: "What do CARC and RARC denial codes mean? Use real claims from our worklist as examples of CO-197 and CO-50, and how to respond." },
   { icon: "users", title: "Why denials are 'born' up front", desc: "Most denials start at registration & eligibility — see why, with our own numbers.", category: "Denials", featured: true, prompt: "Why are most denials 'born' on the front end? Use our data to show it." },
-  { icon: "shield", title: "The appeals process", desc: "How to fight a denial — appeals, overturn rate, and recovering written-off dollars.", category: "Denials", prompt: "Explain the denial appeals process — how appeals work, overturn rate, and recovering dollars. Then show me what a real appeal letter looks like for a claim from our worklist." },
+  { icon: "shield", title: "The appeals process", desc: "How to fight a denial — appeals, overturn rate, and recovering written-off dollars.", category: "Denials", prompt: "Explain the denial appeals process — how appeals work, overturn rate, and recovering dollars. Use our actual appeal numbers." },
   // Metrics
   { icon: "money", title: "Days in A/R, explained", desc: "Why this number is the pulse of your operation, how it's calculated, and what “good” looks like.", category: "Metrics", featured: true, prompt: "Explain days in A/R like I'm new to the revenue cycle — how it's calculated, what's a good benchmark, and what moves it." },
   { icon: "money", title: "Net collection rate", desc: "The share of collectible dollars you actually collect — the bottom-line health metric.", category: "Metrics", prompt: "Explain net collection rate — what it is, what's good, and what moves it." },
@@ -1103,7 +1265,6 @@ const TOOL_LABEL: Record<string, [progress: string, short: string]> = {
   get_cycle_funnel: ["Mapping the claim flow…", "Claim funnel"],
   get_claims_worklist: ["Pulling the denied-claim worklist…", "Worklist"],
   get_claim_detail: ["Opening the claim…", "Claim detail"],
-  draft_appeal_letter: ["Drafting the appeal…", "Appeal draft"],
   simulate_improvement: ["Running the what-if…", "ROI simulation"],
 };
 

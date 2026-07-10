@@ -268,18 +268,6 @@ function render(card: Card, onExplain?: (topic: string) => void) {
       );
     }
 
-    case "letter": {
-      const c = card.claim;
-      return (
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-slate-600">
-          <span className="rounded-md bg-[var(--color-brand-soft)] px-2 py-1 font-semibold text-[var(--color-brand)]">✍️ Drafting appeal</span>
-          <span><b className="text-slate-900">{c.id}</b> · {c.payer}</span>
-          <span>{c.service} · DOS {c.dos}</span>
-          <span>${c.amount.toLocaleString()} · {c.carc}</span>
-          <span className={c.deadlineDays <= 14 ? "font-semibold text-rose-600" : ""}>{c.deadlineDays} days to file</span>
-        </div>
-      );
-    }
   }
 }
 

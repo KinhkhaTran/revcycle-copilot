@@ -5,7 +5,7 @@
 //   - card:     a viz spec streamed to the UI so the answer renders as generative cards
 //
 // Card types the frontend knows how to render:
-//   stat | bar | line | donut | table | alerts | funnel | impact | claim | letter
+//   stat | bar | line | donut | table | alerts | funnel | impact | claim
 
 import {
   ORG, TRENDS, KPIS, ELIGIBILITY, PRIOR_AUTH, REGISTRATION,
@@ -165,19 +165,6 @@ export const TOOLS = [
     },
   },
   {
-    name: "draft_appeal_letter",
-    description:
-      "Pull everything needed to draft a payer appeal letter for ONE denied claim (claim facts, denial code meaning, payer, deadline) and render a letter card in the UI. After calling it, write the actual appeal letter body yourself INSIDE the letter card placeholder — see the tool result instructions.",
-    input_schema: {
-      type: "object",
-      properties: {
-        claim_id: { type: "string", description: "The claim id to appeal, e.g. 'CLM-20461'." },
-      },
-      required: ["claim_id"],
-      additionalProperties: false,
-    },
-  },
-  {
     name: "simulate_improvement",
     description:
       "What-if ROI simulator. Given an operational lever and a target value, computes the estimated monthly dollars recovered and denials prevented, and renders a before/after impact card. Use for 'what would it be worth if...', 'ROI of improving X', or prioritization questions.",
@@ -211,7 +198,7 @@ const METRIC_META = {
   netCollectionRate: { label: "Net collection rate", unit: "%", goodDirection: "up" },
 };
 
-// Plain-English CARC meanings the agent can cite when appealing.
+// Plain-English CARC meanings the agent can cite when explaining a denial.
 const CARC_MEANINGS = {
   "CO-16": "Claim/service lacks information or has a submission/billing error",
   "CO-18": "Exact duplicate claim/service",
@@ -469,24 +456,6 @@ export function executeTool(name, input = {}) {
       return {
         forModel: { ...claim, carcMeaning: CARC_MEANINGS[claim.carc] || null },
         card: { type: "claim", title: `Claim ${claim.id}`, claim: { ...claim, carcMeaning: CARC_MEANINGS[claim.carc] || "" } },
-      };
-    }
-
-    case "draft_appeal_letter": {
-      const claim = findClaim(input.claim_id);
-      if (!claim) return { forModel: { error: `No claim found matching '${input.claim_id}'. Valid ids look like 'CLM-20461'.` }, card: null };
-      return {
-        forModel: {
-          claim: { ...claim, carcMeaning: CARC_MEANINGS[claim.carc] || null },
-          org: { name: ORG.name, type: ORG.type },
-          instructions:
-            "A letter card was rendered in the UI with an empty body. Now WRITE the appeal letter yourself: output it inside a fenced block that starts with ```letter and ends with ``` immediately after the [[chart:...]] marker for this tool. Address the payer's appeals department, reference the claim id / DOS / CARC code, argue the specific root cause, request reprocessing, and sign as the Revenue Cycle Department. Keep it under 250 words, professional, firm.",
-        },
-        card: {
-          type: "letter",
-          title: `Appeal draft — ${claim.id} (${claim.payer})`,
-          claim: { id: claim.id, payer: claim.payer, amount: claim.amount, carc: claim.carc, service: claim.service, dos: claim.dos, deadlineDays: claim.deadlineDays },
-        },
       };
     }
 

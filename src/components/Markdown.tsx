@@ -1,9 +1,8 @@
-import React, { useState } from "react";
+import React from "react";
 
 // A small, dependency-free markdown renderer tuned for chat answers.
 // Supports: headings, bold/italic, inline code, fenced code, GFM pipe tables,
-// blockquotes, ordered/unordered lists, horizontal rules, links — plus a
-// special ```letter fence rendered as letterhead with a copy button.
+// blockquotes, ordered/unordered lists, horizontal rules, links.
 
 // Memoized: parsing runs only when the text actually changes, so finished
 // answers don't re-parse on every streamed token of the current one.
@@ -34,40 +33,6 @@ function inline(text: string, key: string): React.ReactNode[] {
   return out;
 }
 
-// ── Letterhead block for appeal drafts ───────────────────────────────────────
-function LetterBlock({ body }: { body: string }) {
-  const [copied, setCopied] = useState(false);
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(body);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1600);
-    } catch {
-      /* clipboard unavailable */
-    }
-  };
-  return (
-    <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-      <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50 px-4 py-2">
-        <span className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wide text-slate-600">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-3.5 w-3.5">
-            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><path d="M14 2v6h6M8 13h8M8 17h8M8 9h1" />
-          </svg>
-          Appeal letter draft
-        </span>
-        <button
-          type="button"
-          onClick={copy}
-          className="rounded-md border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:border-[var(--color-brand)] hover:text-[var(--color-brand)]"
-        >
-          {copied ? "Copied ✓" : "Copy"}
-        </button>
-      </div>
-      <div className="whitespace-pre-wrap px-5 py-4 font-serif text-[13.5px] leading-relaxed text-slate-800">{body}</div>
-    </div>
-  );
-}
-
 // ── Block-level parsing ──────────────────────────────────────────────────────
 const isHr = (l: string) => /^\s*([-*_])(\s*\1){2,}\s*$/.test(l);
 const isTableSep = (l: string) => l.includes("|") && /-/.test(l) && /^[\s|:-]+$/.test(l);
@@ -86,22 +51,17 @@ function renderBlocks(src: string): React.ReactNode[] {
     // blank
     if (line.trim() === "") { i++; continue; }
 
-    // fenced code (```letter renders as letterhead)
+    // fenced code
     if (line.trim().startsWith("```")) {
-      const lang = line.trim().slice(3).trim().toLowerCase();
       const body: string[] = [];
       i++;
       while (i < lines.length && !lines[i].trim().startsWith("```")) body.push(lines[i++]);
       i++; // closing fence
-      if (lang === "letter") {
-        blocks.push(<LetterBlock key={k++} body={body.join("\n").trim()} />);
-      } else {
-        blocks.push(
-          <pre key={k++} className="overflow-x-auto rounded-lg bg-slate-900 px-3 py-2.5 font-mono text-[0.8rem] leading-relaxed text-slate-100">
-            <code>{body.join("\n")}</code>
-          </pre>
-        );
-      }
+      blocks.push(
+        <pre key={k++} className="overflow-x-auto rounded-lg bg-slate-900 px-3 py-2.5 font-mono text-[0.8rem] leading-relaxed text-slate-100">
+          <code>{body.join("\n")}</code>
+        </pre>
+      );
       continue;
     }
 
