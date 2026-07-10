@@ -103,13 +103,51 @@ const TABS: Record<Mode, {
   },
 };
 
+// ── Saved conversations ──────────────────────────────────────────────────────
+// Every chat is its own thread with a title, kept in localStorage so history
+// survives reloads. The Ask and Learn pages each show one "active" chat.
+type Conversation = { id: string; mode: Mode; title: string; messages: ChatMessage[]; updatedAt: number };
+
+const CHATS_KEY = "cadence-chats-v1";
+const MAX_SAVED_CHATS = 30;
+const EMPTY_MESSAGES: ChatMessage[] = [];
+
+function loadChats(): Conversation[] {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(CHATS_KEY) || "[]");
+    if (!Array.isArray(parsed)) return [];
+    // Settle anything saved mid-stream: a reload can freeze tool chips as "running".
+    return parsed
+      .filter((c) => c && c.id && Array.isArray(c.messages))
+      .map((c: Conversation) => ({
+        ...c,
+        messages: c.messages.map((m) => (m.tools?.length ? { ...m, tools: m.tools.map((t) => ({ ...t, done: true })) } : m)),
+      }));
+  } catch {
+    return [];
+  }
+}
+
+function chatTitle(text: string) {
+  const t = text.trim().replace(/\s+/g, " ");
+  return t.length > 46 ? `${t.slice(0, 46).trimEnd()}…` : t;
+}
+
 export default function App() {
   const [overview, setOverview] = useState<Overview | null>(null);
   const [hasKey, setHasKey] = useState(true);
   const [nav, setNav] = useState<Nav>("dashboard");
   const tab: Mode = nav === "learn" ? "learn" : "pro"; // chat mode derived from the active page
   const [segment, setSegment] = useState<Segment>("all");
-  const [threads, setThreads] = useState<Record<Mode, ChatMessage[]>>({ learn: [], pro: [] });
+  const [convos, setConvos] = useState<Conversation[]>(loadChats);
+  // Which saved chat each page (Ask / Learn) is showing; null = fresh chat.
+  const [activeIds, setActiveIds] = useState<Record<Mode, string | null>>(() => {
+    const saved = loadChats();
+    return {
+      learn: saved.find((c) => c.mode === "learn")?.id ?? null,
+      pro: saved.find((c) => c.mode === "pro")?.id ?? null,
+    };
+  });
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [working, setWorking] = useState<string | null>(null);
@@ -121,16 +159,17 @@ export default function App() {
   const [context, setContext] = useState<string | null>(null);
   const threadRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null); // lets the Stop button cancel a stream
+  const streamConvoRef = useRef<string | null>(null); // which chat the in-flight stream writes to
   // Follow the streaming answer only while the user is already near the bottom,
   // so they can scroll up to read the top while the rest still loads below.
   const stickRef = useRef(true);
 
-  const messages = threads[tab];
+  const messages = convos.find((c) => c.id === activeIds[tab])?.messages ?? EMPTY_MESSAGES;
   const started = messages.some((m) => !m.hidden); // once a conversation begins, swap hero → composer
   // Show the entry screen when nothing's been asked, or when browsing lessons mid-conversation.
   const showWelcome = !started || (tab === "learn" && browseLessons);
-  const setMessages = (updater: (prev: ChatMessage[]) => ChatMessage[], mode: Mode = tab) =>
-    setThreads((prev) => ({ ...prev, [mode]: updater(prev[mode]) }));
+  const updateThread = (id: string, updater: (prev: ChatMessage[]) => ChatMessage[]) =>
+    setConvos((prev) => prev.map((c) => (c.id === id ? { ...c, messages: updater(c.messages), updatedAt: Date.now() } : c)));
 
   useEffect(() => {
     fetch("/api/overview")
@@ -153,6 +192,20 @@ export default function App() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
+
+  // Persist chats (most recent first), debounced so streaming frames don't
+  // serialize the whole history 60× a second.
+  useEffect(() => {
+    const t = setTimeout(() => {
+      try {
+        const sorted = [...convos].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, MAX_SAVED_CHATS);
+        localStorage.setItem(CHATS_KEY, JSON.stringify(sorted));
+      } catch {
+        /* storage full or unavailable — history just won't survive reload */
+      }
+    }, 400);
+    return () => clearTimeout(t);
+  }, [convos]);
 
   useEffect(() => {
     if (showWelcome) return; // browsing lessons — the thread isn't on screen
@@ -179,8 +232,20 @@ export default function App() {
     stickRef.current = true; // a new question follows from the start (until the user scrolls up)
     const mode = opts?.mode ?? tab; // lock to the tab the message was sent from
     const userMsg: ChatMessage = { role: "user", text: text.trim(), hidden: opts?.hidden };
-    const history = [...threads[mode], userMsg];
-    setMessages(() => [...history, { role: "assistant", text: "", cards: [], tools: [] }], mode);
+    // Continue the page's active chat, or start (and select) a new one.
+    let prior = convos.find((c) => c.id === activeIds[mode])?.messages;
+    let cid = activeIds[mode];
+    if (!cid || !prior) {
+      cid = `c-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+      const id = cid;
+      setConvos((prev) => [{ id, mode, title: chatTitle(text), messages: [], updatedAt: Date.now() }, ...prev]);
+      setActiveIds((prev) => ({ ...prev, [mode]: id }));
+      prior = [];
+    }
+    const convoId = cid;
+    streamConvoRef.current = convoId;
+    const history = [...prior, userMsg];
+    updateThread(convoId, () => [...history, { role: "assistant", text: "", cards: [], tools: [] }]);
     setInput("");
     setBusy(true);
     setWorking(null);
@@ -207,14 +272,14 @@ export default function App() {
     const appendText = (t: string) => {
       if (!t) return;
       setWorking(null);
-      setMessages((prev) => {
+      updateThread(convoId, (prev) => {
         const last = prev[prev.length - 1];
         if (last?.role !== "assistant") return prev;
         return [
           ...prev.slice(0, -1),
           { ...last, text: last.text + t, tools: (last.tools || []).map((x) => ({ ...x, done: true })) },
         ];
-      }, mode);
+      });
     };
 
     const pump = () => {
@@ -248,7 +313,7 @@ export default function App() {
           return;
         }
         if (e.type === "error") flush(); // keep the error after any queued prose
-        setMessages((prev) => {
+        updateThread(convoId, (prev) => {
           const last = prev[prev.length - 1];
           if (last?.role !== "assistant") return prev;
           const updated = { ...last };
@@ -257,7 +322,7 @@ export default function App() {
             updated.tools = [...(last.tools || []).map((t) => ({ ...t, done: true })), { name: e.name, done: false }];
           else if (e.type === "error") updated.text = last.text + `\n\n⚠️ ${e.message}`;
           return [...prev.slice(0, -1), updated];
-        }, mode);
+        });
         if (e.type === "tool_use") setWorking(prettyTool(e.name));
       },
       controller.signal
@@ -272,7 +337,7 @@ export default function App() {
     }
 
     // Finalize: pull the trailing [[suggest: a | b | c]] line into chips.
-    setMessages((prev) => {
+    updateThread(convoId, (prev) => {
       const last = prev[prev.length - 1];
       if (last?.role !== "assistant") return prev;
       const m = /\[\[suggest:([^\]]*)\]\]/.exec(last.text);
@@ -288,7 +353,7 @@ export default function App() {
           tools: (last.tools || []).map((t) => ({ ...t, done: true })),
         },
       ];
-    }, mode);
+    });
 
     abortRef.current = null;
     setBusy(false);
@@ -302,7 +367,9 @@ export default function App() {
     setBusy(false);
     setWorking(null);
     // If we stopped before anything streamed, mark the empty bubble as stopped.
-    setMessages((prev) => {
+    const id = streamConvoRef.current;
+    if (!id) return;
+    updateThread(id, (prev) => {
       const last = prev[prev.length - 1];
       if (last?.role === "assistant" && !last.text && !(last.cards && last.cards.length)) {
         return [...prev.slice(0, -1), { ...last, text: "_Stopped._" }];
@@ -316,6 +383,34 @@ export default function App() {
     setNav("ask");
     send(prompt, { ...opts, mode: "pro" });
   }
+
+  // ── Chat history (sidebar) ─────────────────────────────────
+  function openChat(id: string) {
+    const c = convos.find((x) => x.id === id);
+    if (!c) return;
+    setActiveIds((prev) => ({ ...prev, [c.mode]: id }));
+    setNav(c.mode === "learn" ? "learn" : "ask");
+    setBrowseLessons(false);
+    stickRef.current = true;
+  }
+
+  // Fresh chat on the page you're on (dashboard/guide count as Ask).
+  function newChat() {
+    setActiveIds((prev) => ({ ...prev, [tab]: null }));
+    setNav(tab === "learn" ? "learn" : "ask");
+    setBrowseLessons(false);
+  }
+
+  function deleteChat(id: string) {
+    if (busy && streamConvoRef.current === id) stop(); // don't stream into a deleted chat
+    setConvos((prev) => prev.filter((c) => c.id !== id));
+    setActiveIds((prev) => ({
+      learn: prev.learn === id ? null : prev.learn,
+      pro: prev.pro === id ? null : prev.pro,
+    }));
+  }
+
+  const chatList = useMemo(() => [...convos].sort((a, b) => b.updatedAt - a.updatedAt), [convos]);
 
   // Clicking a KPI selects it as context — the user then types their own question.
   function explainKpi(k: Kpi) {
@@ -370,7 +465,16 @@ export default function App() {
 
   return (
     <div className="flex h-full">
-      <Sidebar nav={nav} setNav={setNav} openPalette={() => setPaletteOpen(true)} />
+      <Sidebar
+        nav={nav}
+        setNav={setNav}
+        openPalette={() => setPaletteOpen(true)}
+        chats={chatList}
+        activeChatId={nav === "ask" ? activeIds.pro : nav === "learn" ? activeIds.learn : null}
+        onOpenChat={openChat}
+        onNewChat={newChat}
+        onDeleteChat={deleteChat}
+      />
 
       {/* ── Main ──────────────────────────────────────────────── */}
       <main className="flex min-w-0 flex-1 flex-col">
@@ -525,7 +629,25 @@ export default function App() {
 }
 
 // ── Skinny left sidebar ──────────────────────────────────────
-function Sidebar({ nav, setNav, openPalette }: { nav: Nav; setNav: (n: Nav) => void; openPalette: () => void }) {
+function Sidebar({
+  nav,
+  setNav,
+  openPalette,
+  chats,
+  activeChatId,
+  onOpenChat,
+  onNewChat,
+  onDeleteChat,
+}: {
+  nav: Nav;
+  setNav: (n: Nav) => void;
+  openPalette: () => void;
+  chats: Conversation[];
+  activeChatId: string | null;
+  onOpenChat: (id: string) => void;
+  onNewChat: () => void;
+  onDeleteChat: (id: string) => void;
+}) {
   const items: { key: Nav; label: string; icon: React.ReactNode }[] = [
     {
       key: "dashboard",
@@ -605,6 +727,52 @@ function Sidebar({ nav, setNav, openPalette }: { nav: Nav; setNav: (n: Nav) => v
         <kbd className="rounded border border-slate-200 px-1 py-0.5 text-[9.5px] font-semibold">⌘K</kbd>
       </button>
 
+      {/* Saved chats */}
+      <div className="mt-4 flex items-center justify-between px-2">
+        <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Chats</span>
+        <button
+          onClick={onNewChat}
+          title="New chat"
+          className="rounded p-0.5 text-slate-400 transition hover:bg-slate-100 hover:text-[var(--color-brand)]"
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" className="h-3.5 w-3.5">
+            <path d="M12 5v14M5 12h14" />
+          </svg>
+        </button>
+      </div>
+      <div className="mt-1 min-h-0 flex-1 space-y-0.5 overflow-y-auto">
+        {chats.length === 0 && <div className="px-2.5 py-1 text-[11px] text-slate-300">No saved chats yet</div>}
+        {chats.map((c) => (
+          <div key={c.id} className="group relative">
+            <button
+              onClick={() => onOpenChat(c.id)}
+              title={c.title}
+              className={`w-full truncate rounded-lg px-2.5 py-1.5 pr-7 text-left text-[12px] transition ${
+                activeChatId === c.id
+                  ? "bg-[var(--color-brand-soft)] font-medium text-[var(--color-brand)]"
+                  : "text-slate-600 hover:bg-slate-100"
+              }`}
+            >
+              <span
+                className="mr-1.5 inline-block h-1.5 w-1.5 shrink-0 rounded-full align-middle"
+                style={{ background: c.mode === "learn" ? "var(--color-accent)" : "var(--color-brand)" }}
+                title={c.mode === "learn" ? "Learn chat" : "Ask chat"}
+              />
+              {c.title}
+            </button>
+            <button
+              onClick={() => onDeleteChat(c.id)}
+              title="Delete chat"
+              className="absolute right-1 top-1/2 -translate-y-1/2 rounded p-0.5 text-slate-300 opacity-0 transition hover:text-rose-500 group-hover:opacity-100"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" className="h-3 w-3">
+                <path d="M18 6 6 18M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+        ))}
+      </div>
+
       <div className="mt-auto flex items-center gap-2 border-t border-slate-100 px-2 pt-3">
         <div className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-br from-[#0091d6] to-[#0069b0] text-[11px] font-bold text-white">KD</div>
         <div className="min-w-0 leading-tight">
@@ -617,14 +785,19 @@ function Sidebar({ nav, setNav, openPalette }: { nav: Nav; setNav: (n: Nav) => v
 }
 
 // ── Guide — what Cadence is, what it does, and how to use it ─────────────────
-const GUIDE_FEATURES = [
+const GUIDE_FEATURES: { title: string; desc: string; lead?: boolean }[] = [
   {
-    title: "Live KPI dashboard",
-    desc: "Twelve revenue-cycle KPIs against industry benchmarks — clean claim rate, denials, days in A/R, DNFB and more — plus the cycle funnel, active alerts, and a payer scorecard.",
+    lead: true,
+    title: "Your numbers, and only your numbers",
+    desc: "Cadence answers exclusively from its 15 revenue-cycle data tools. Unlike a general-purpose copilot, it never quietly fills a gap with a figure from the internet or its own memory — and the tool chips above every answer show exactly what it looked at, so you always know where a number came from.",
   },
   {
-    title: "Ask anything, get sourced answers",
-    desc: "Cadence is an AI agent with 15 data tools. Ask a question and it pulls the actual numbers — eligibility, prior auth, coding, denials, staffing, financials — and answers with charts spliced into the response.",
+    title: "Morning briefing",
+    desc: "One click delivers the day's top three priorities ranked by revenue impact, each tied to its root cause and the single biggest lever to pull.",
+  },
+  {
+    title: "Charts you can click into",
+    desc: "Answers come back with charts and tables built from the data it pulled — and every bar, slice, stat, and row in them is clickable. Click one and it becomes the context for your next question, so you can keep drilling from symptom to root cause.",
   },
   {
     title: "Root-cause tracing",
@@ -639,8 +812,8 @@ const GUIDE_FEATURES = [
     desc: "Ask which denied claims to work first and Cadence ranks the live worklist by dollars and appeal-deadline risk, down to the individual claim's denial code and root cause.",
   },
   {
-    title: "Morning briefing",
-    desc: "One click delivers the day's top three priorities ranked by revenue impact, each tied to its root cause and the single biggest lever to pull.",
+    title: "Live KPI dashboard",
+    desc: "Twelve revenue-cycle KPIs against industry benchmarks — clean claim rate, denials, days in A/R, DNFB and more — plus the cycle funnel, active alerts, and a payer scorecard.",
   },
 ] as const;
 
@@ -696,7 +869,12 @@ function GuideView({ onTry, onNav }: { onTry: (prompt: string) => void; onNav: (
         <h2 className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">What it does</h2>
         <div className="mt-3 grid gap-3 sm:grid-cols-2">
           {GUIDE_FEATURES.map((f) => (
-            <div key={f.title} className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+            <div
+              key={f.title}
+              className={`rounded-xl border bg-white p-4 shadow-sm ${
+                f.lead ? "border-[var(--color-brand)]/30 sm:col-span-2" : "border-slate-200"
+              }`}
+            >
               <div className="text-[13.5px] font-semibold text-slate-900">{f.title}</div>
               <p className="mt-1 text-[12.5px] leading-relaxed text-slate-600">{f.desc}</p>
             </div>
@@ -753,7 +931,8 @@ function GuideView({ onTry, onNav }: { onTry: (prompt: string) => void; onNav: (
           Cadence runs on Claude with 15 purpose-built data tools covering eligibility, prior authorization,
           registration quality, coding, denials, staffing, trends, financials, and payer performance. When you ask a
           question, the agent decides which tools to call, reads the results, and composes the answer — the tool
-          chips above each response show exactly what it looked at.
+          chips above each response show exactly what it looked at. If a figure isn't in a tool result, it doesn't
+          go in the answer; nothing is fetched from the open internet.
         </p>
         <p className="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-[12px] leading-relaxed text-amber-800">
           <strong>Demo note:</strong> every figure in this app is mock data fabricated for demonstration — not real
