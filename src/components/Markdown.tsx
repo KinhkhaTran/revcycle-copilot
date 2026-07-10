@@ -5,9 +5,11 @@ import React, { useState } from "react";
 // blockquotes, ordered/unordered lists, horizontal rules, links — plus a
 // special ```letter fence rendered as letterhead with a copy button.
 
-export default function Markdown({ children }: { children: string }) {
+// Memoized: parsing runs only when the text actually changes, so finished
+// answers don't re-parse on every streamed token of the current one.
+export default React.memo(function Markdown({ children }: { children: string }) {
   return <div className="space-y-3 text-sm leading-relaxed text-slate-800">{renderBlocks(children)}</div>;
-}
+});
 
 // ── Inline (bold / italic / code / links) ────────────────────────────────────
 const INLINE = /(\*\*([^*]+)\*\*)|(`([^`]+)`)|(\*([^*]+)\*)|(\[([^\]]+)\]\(([^)]+)\))/;

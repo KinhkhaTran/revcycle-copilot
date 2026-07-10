@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { streamChat, type Mode, type Segment } from "./api";
 import CardView from "./components/CardView";
 import CommandPalette, { type PaletteAction } from "./components/CommandPalette";
@@ -114,6 +114,8 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [working, setWorking] = useState<string | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  // Learn tab: temporarily show the lesson grid again over an active conversation.
+  const [browseLessons, setBrowseLessons] = useState(false);
   // What the user clicked on (a KPI, chart slice, or alert). Attached as context
   // to their next typed question instead of firing a canned prompt.
   const [context, setContext] = useState<string | null>(null);
@@ -125,6 +127,8 @@ export default function App() {
 
   const messages = threads[tab];
   const started = messages.some((m) => !m.hidden); // once a conversation begins, swap hero → composer
+  // Show the entry screen when nothing's been asked, or when browsing lessons mid-conversation.
+  const showWelcome = !started || (tab === "learn" && browseLessons);
   const setMessages = (updater: (prev: ChatMessage[]) => ChatMessage[], mode: Mode = tab) =>
     setThreads((prev) => ({ ...prev, [mode]: updater(prev[mode]) }));
 
@@ -151,10 +155,11 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (showWelcome) return; // browsing lessons — the thread isn't on screen
     if (!stickRef.current) return; // user scrolled up — don't yank them back down
     const el = threadRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [messages, working]);
+  }, [messages, working, showWelcome]);
 
   // When something is selected, focus whichever composer is on screen (hero or bottom bar).
   useEffect(() => {
@@ -170,6 +175,7 @@ export default function App() {
 
   async function send(text: string, opts?: { hidden?: boolean; mode?: Mode }) {
     if (!text.trim() || busy) return;
+    setBrowseLessons(false); // picking a lesson (or asking anything) returns to the thread
     stickRef.current = true; // a new question follows from the start (until the user scrolls up)
     const mode = opts?.mode ?? tab; // lock to the tab the message was sent from
     const userMsg: ChatMessage = { role: "user", text: text.trim(), hidden: opts?.hidden };
@@ -192,29 +198,78 @@ export default function App() {
         .trim(),
     }));
 
+    // Typewriter: buffer streamed text and reveal it at a steady per-frame pace,
+    // so the answer glides out smoothly (and the app re-renders at most once per
+    // frame) instead of lurching with every network chunk.
+    const queue = { text: "" };
+    let raf = 0;
+
+    const appendText = (t: string) => {
+      if (!t) return;
+      setWorking(null);
+      setMessages((prev) => {
+        const last = prev[prev.length - 1];
+        if (last?.role !== "assistant") return prev;
+        return [
+          ...prev.slice(0, -1),
+          { ...last, text: last.text + t, tools: (last.tools || []).map((x) => ({ ...x, done: true })) },
+        ];
+      }, mode);
+    };
+
+    const pump = () => {
+      raf = 0;
+      const q = queue.text;
+      if (!q) return;
+      // Reveal ~12% of the backlog per frame (min 2 chars): a steady pace while
+      // keeping up, and quickly drains the burst after a tool-call pause.
+      const n = Math.max(2, Math.ceil(q.length * 0.12));
+      queue.text = q.slice(n);
+      appendText(q.slice(0, n));
+      if (queue.text) raf = requestAnimationFrame(pump);
+    };
+
+    const flush = () => {
+      if (raf) cancelAnimationFrame(raf);
+      raf = 0;
+      const q = queue.text;
+      queue.text = "";
+      appendText(q);
+    };
+
     await streamChat(
       wire,
       mode,
       mode === "pro" ? segment : "all",
       (e) => {
-      setMessages((prev) => {
-        const last = prev[prev.length - 1];
-        if (last?.role !== "assistant") return prev;
-        const updated = { ...last };
         if (e.type === "text") {
-          updated.text = last.text + e.text;
-          updated.tools = (last.tools || []).map((t) => ({ ...t, done: true }));
-        } else if (e.type === "card") updated.cards = [...(last.cards || []), e.card];
-        else if (e.type === "tool_use")
-          updated.tools = [...(last.tools || []).map((t) => ({ ...t, done: true })), { name: e.name, done: false }];
-        else if (e.type === "error") updated.text = last.text + `\n\n⚠️ ${e.message}`;
-        return [...prev.slice(0, -1), updated];
-      }, mode);
-      if (e.type === "tool_use") setWorking(prettyTool(e.name));
-      if (e.type === "text") setWorking(null);
+          queue.text += e.text;
+          if (!raf) raf = requestAnimationFrame(pump);
+          return;
+        }
+        if (e.type === "error") flush(); // keep the error after any queued prose
+        setMessages((prev) => {
+          const last = prev[prev.length - 1];
+          if (last?.role !== "assistant") return prev;
+          const updated = { ...last };
+          if (e.type === "card") updated.cards = [...(last.cards || []), e.card];
+          else if (e.type === "tool_use")
+            updated.tools = [...(last.tools || []).map((t) => ({ ...t, done: true })), { name: e.name, done: false }];
+          else if (e.type === "error") updated.text = last.text + `\n\n⚠️ ${e.message}`;
+          return [...prev.slice(0, -1), updated];
+        }, mode);
+        if (e.type === "tool_use") setWorking(prettyTool(e.name));
       },
       controller.signal
     );
+
+    if (controller.signal.aborted) {
+      // User hit Stop — drop the unrevealed tail so the bubble matches what they saw.
+      if (raf) cancelAnimationFrame(raf);
+      queue.text = "";
+    } else {
+      flush();
+    }
 
     // Finalize: pull the trailing [[suggest: a | b | c]] line into chips.
     setMessages((prev) => {
@@ -275,6 +330,16 @@ export default function App() {
     setContext(topic);
   }
 
+  // Stable identities for the callbacks passed to memoized Bubbles, so finished
+  // messages skip re-rendering while an answer streams. The refs are re-pointed
+  // every render, so the wrappers always call the closure with current state.
+  const sendRef = useRef(send);
+  sendRef.current = send;
+  const explainRef = useRef(explainTopic);
+  explainRef.current = explainTopic;
+  const onBubbleSuggest = useRef((q: string) => void sendRef.current(q)).current;
+  const onBubbleExplain = useRef((topic: string) => explainRef.current(topic)).current;
+
   // Send the user's typed question, weaving in the selected context if any.
   function submitWithContext(text: string) {
     const t = text.trim();
@@ -310,7 +375,31 @@ export default function App() {
       <main className="flex min-w-0 flex-1 flex-col">
         {/* Slim header — page context + provenance */}
         <header className="flex items-center justify-between gap-3 border-b border-slate-200 bg-white px-4 py-2.5 sm:px-8">
-          <div className="text-sm font-semibold text-slate-900">{PAGE_LABEL[nav]}</div>
+          <div className="flex items-center gap-3">
+            <div className="text-sm font-semibold text-slate-900">{PAGE_LABEL[nav]}</div>
+            {nav === "learn" && started && (
+              <button
+                onClick={() => setBrowseLessons((v) => !v)}
+                className="flex items-center gap-1 rounded-full border border-slate-200 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:border-[var(--color-brand)] hover:text-[var(--color-brand)]"
+              >
+                {browseLessons ? (
+                  <>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" className="h-3 w-3">
+                      <path d="M19 12H5M12 19l-7-7 7-7" />
+                    </svg>
+                    Back to conversation
+                  </>
+                ) : (
+                  <>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-3 w-3">
+                      <path d="M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z" />
+                    </svg>
+                    Browse lessons
+                  </>
+                )}
+              </button>
+            )}
+          </div>
           <div className="flex items-center gap-2">
             <span className="hidden text-xs text-slate-400 lg:block">{overview?.org.name ?? "Allina Health"} · in partnership with Optum</span>
             <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700">Mock data</span>
@@ -335,8 +424,8 @@ export default function App() {
         )}
 
         <div ref={threadRef} onScroll={handleThreadScroll} className="flex-1 overflow-y-auto px-4 py-5 sm:px-6">
-          <div className={`mx-auto ${started ? "max-w-3xl" : "max-w-6xl"}`}>
-            {messages.filter((m) => !m.hidden).length === 0 ? (
+          <div className={`mx-auto ${showWelcome ? "max-w-6xl" : "max-w-3xl"}`}>
+            {showWelcome ? (
               <Welcome
                 tab={tab}
                 segment={segment}
@@ -350,7 +439,7 @@ export default function App() {
               <div className="space-y-6">
                 {messages.map((m, i) =>
                   m.hidden ? null : (
-                    <Bubble key={i} m={m} busy={busy && i === messages.length - 1} onExplain={explainTopic} onSuggest={(s) => send(s)} />
+                    <Bubble key={i} m={m} busy={busy && i === messages.length - 1} onExplain={onBubbleExplain} onSuggest={onBubbleSuggest} />
                   )
                 )}
                 {working && (
@@ -364,7 +453,7 @@ export default function App() {
           </div>
         </div>
 
-        {started && (
+        {started && !showWelcome && (
         <div className="border-t border-slate-200 bg-white px-4 py-3 sm:px-8">
           <div className="mx-auto max-w-3xl">
             <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-400">
@@ -876,7 +965,9 @@ function LessonLibrary({ onClose, onPick }: { onClose: () => void; onPick: (prom
   );
 }
 
-function Bubble({
+// Memoized: while an answer streams, only the streaming bubble re-renders —
+// message objects keep their identity and the App passes stable callbacks.
+const Bubble = memo(function Bubble({
   m,
   busy,
   onExplain,
@@ -960,7 +1051,7 @@ function Bubble({
       )}
     </div>
   );
-}
+});
 
 function KpiCard({ k, onExplain }: { k: Kpi; onExplain: (k: Kpi) => void }) {
   const good = k.goodDirection === "up" ? k.value >= k.benchmark : k.value <= k.benchmark;
