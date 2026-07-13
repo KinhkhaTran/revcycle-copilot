@@ -789,7 +789,7 @@ const GUIDE_FEATURES: { title: string; desc: string; lead?: boolean }[] = [
   {
     lead: true,
     title: "Your numbers, and only your numbers",
-    desc: "Cadence answers exclusively from its 15 revenue-cycle data tools. Unlike a general-purpose copilot, it never quietly fills a gap with a figure from the internet or its own memory — and the tool chips above every answer show exactly what it looked at, so you always know where a number came from.",
+    desc: "Cadence answers exclusively from Optum revenue-cycle data, reached through 15 purpose-built tools (for now it runs on mock demo data). Unlike a general-purpose copilot, it never quietly fills a gap with a figure from the internet or its own memory — and the tool chips above every answer show exactly what it pulled, so you always know where a number came from.",
   },
   {
     title: "Morning briefing",
@@ -806,14 +806,6 @@ const GUIDE_FEATURES: { title: string; desc: string; lead?: boolean }[] = [
   {
     title: "What-if simulation",
     desc: "Ask what it's worth to fix a metric (\"raise eligibility auto-verify to its ceiling\") and Cadence simulates the dollar impact, so improvement work can be ranked by ROI.",
-  },
-  {
-    title: "Worklist triage",
-    desc: "Ask which denied claims to work first and Cadence ranks the live worklist by dollars and appeal-deadline risk, down to the individual claim's denial code and root cause.",
-  },
-  {
-    title: "Live KPI dashboard",
-    desc: "Twelve revenue-cycle KPIs against industry benchmarks — clean claim rate, denials, days in A/R, DNFB and more — plus the cycle funnel, active alerts, and a payer scorecard.",
   },
 ] as const;
 
